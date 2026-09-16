@@ -1,0 +1,37 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<link rel="stylesheet" href="popup.css">
+</head>
+<body>
+
+<header class="head">
+  <div class="logo">A</div>
+  <div class="titles">
+    <h1>AI 阅读助手</h1>
+    <p id="modelLine">加载中…</p>
+  </div>
+</header>
+
+<div class="tip" id="tip" hidden>
+  <span>还没有配置模型，填入 API Key 后就能用了。</span>
+  <button id="goSetup">去配置</button>
+</div>
+
+<section class="recent">
+  <div class="section-title">最近问答</div>
+  <div id="recentList"></div>
+  <div class="empty" id="recentEmpty" hidden>还没有记录。在网页上划一段文字试试。</div>
+</section>
+
+<footer class="foot">
+  <button class="primary" id="openHistory">全部历史</button>
+  <button id="openSettings">设置</button>
+</footer>
+
+<div class="kbd-hint"><kbd>Alt</kbd>+<kbd>Shift</kbd>+<kbd>E</kbd> 解释选中内容</div>
+
+<script type="module" src="popup.js"></script>
+</body>
+</html>

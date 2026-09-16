@@ -1,0 +1,633 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>AI 阅读助手 · 界面预览</title>
+<style>
+  /* 仅预览页自身的壳样式；面板与气泡的样式全部来自 content.js 的真实 CSS */
+  body {
+    margin: 0;
+    background: #ffffff;
+    color: #1f2328;
+    font: 400 15px/1.9 -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
+  }
+  .page {
+    max-width: 720px;
+    margin: 0 auto;
+    padding: 40px 48px 120px 40px;
+  }
+  @media (min-width: 1100px) { .page { margin-left: 6vw; } }
+  .page h1 { font-size: 24px; margin: 0 0 6px; letter-spacing: -0.01em; }
+  .page .lead { color: #8b939f; font-size: 13px; margin-bottom: 28px; }
+  .page h2 { font-size: 16px; margin: 28px 0 10px; }
+  .page p { color: #3d4450; }
+  .page mark { background: rgba(99, 102, 241, 0.18); padding: 1px 2px; border-radius: 3px; }
+  .page code {
+    font-family: ui-monospace, Menlo, Consolas, monospace;
+    font-size: 13px; background: rgba(15,23,42,0.06);
+    padding: 1px 5px; border-radius: 4px; color: #b4305c;
+  }
+  .note {
+    position: fixed; left: 16px; bottom: 16px;
+    font-size: 12px; color: #8b939f; background: #f6f7f9;
+    border: 1px solid rgba(15,23,42,0.08); border-radius: 9px;
+    padding: 8px 12px; max-width: 300px; line-height: 1.6;
+  }
+  @media (prefers-color-scheme: dark) {
+    body { background: #16181c; color: #e3e5e8; }
+    .page p { color: #b9bfc9; }
+    .page .lead { color: #6f7784; }
+    .page code { background: rgba(255,255,255,0.09); color: #f0a0c0; }
+    .note { background: #1d2025; border-color: rgba(255,255,255,0.1); color: #6f7784; }
+  }
+</style>
+<style>
+/* ======== 以下样式由 tools/make_preview.mjs 从 content/content.js 抽取 ======== */
+
+:host { all: initial; }
+
+/* ---------- 划词气泡：只做触发器，体量刻意做得小 ---------- */
+
+.pop {
+  position: fixed;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 9px 10px;
+  max-width: min(400px, calc(100vw - 24px));
+  background: #ffffff;
+  border: 1px solid rgba(15, 23, 42, 0.09);
+  border-radius: 12px;
+  box-shadow: 0 14px 36px rgba(15, 23, 42, 0.16), 0 2px 8px rgba(15, 23, 42, 0.07);
+  font: 400 13px/1.6 -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", sans-serif;
+  visibility: hidden;
+  animation: arc-pop-in 0.13s ease-out;
+  z-index: 2;
+}
+@keyframes arc-pop-in {
+  from { opacity: 0; transform: translateY(-4px) scale(0.98); }
+  to   { opacity: 1; transform: none; }
+}
+
+.pop-quote {
+  max-width: 340px;
+  font-size: 11.5px;
+  line-height: 1.5;
+  color: #8b939f;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  border-left: 2px solid rgba(99, 102, 241, 0.4);
+  padding-left: 7px;
+}
+
+.pop-chips { display: flex; flex-wrap: wrap; gap: 5px; }
+
+.chip {
+  all: unset;
+  padding: 4px 10px;
+  border-radius: 999px;
+  border: 1px solid rgba(15, 23, 42, 0.1);
+  background: #fff;
+  font-size: 12px;
+  color: #334155;
+  cursor: pointer;
+  transition: all 0.13s;
+  white-space: nowrap;
+}
+.chip:hover { border-color: #6366f1; color: #4f46e5; background: rgba(99, 102, 241, 0.07); }
+.chip.primary { background: #4f46e5; border-color: #4f46e5; color: #fff; }
+.chip.primary:hover { background: #4338ca; border-color: #4338ca; color: #fff; }
+
+/* ---------- 右侧对话面板 ---------- */
+
+.panel {
+  position: fixed;
+  top: 0;
+  right: 0;
+  bottom: 0;
+  width: var(--arc-panel-w, 400px);
+  display: flex;
+  flex-direction: column;
+  background: #ffffff;
+  border-left: 1px solid rgba(15, 23, 42, 0.09);
+  box-shadow: -12px 0 40px rgba(15, 23, 42, 0.12);
+  font: 400 13.5px/1.7 -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", sans-serif;
+  z-index: 1;
+  animation: arc-slide-in 0.2s cubic-bezier(0.22, 0.61, 0.36, 1);
+}
+@keyframes arc-slide-in {
+  from { transform: translateX(14px); opacity: 0.4; }
+  to   { transform: none; opacity: 1; }
+}
+
+.panel-resize {
+  position: absolute;
+  left: -3px; top: 0; bottom: 0;
+  width: 7px;
+  cursor: col-resize;
+  z-index: 5;
+}
+.panel-resize::after {
+  content: "";
+  position: absolute;
+  left: 3px; top: 0; bottom: 0;
+  width: 1px;
+  background: transparent;
+  transition: background 0.15s;
+}
+.panel-resize:hover::after, .panel-resize.dragging::after { background: #6366f1; }
+
+.panel-head {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  padding: 11px 12px 11px 15px;
+  border-bottom: 1px solid rgba(15, 23, 42, 0.07);
+  background: linear-gradient(180deg, rgba(99, 102, 241, 0.05), rgba(99, 102, 241, 0));
+  flex: none;
+  user-select: none;
+}
+
+.dot { width: 7px; height: 7px; border-radius: 50%; background: #6366f1; flex: none; }
+.panel-title { min-width: 0; flex: 1; }
+.panel-title b { display: block; font-size: 12.5px; font-weight: 650; color: #4f46e5; letter-spacing: 0.01em; }
+.panel-sub {
+  display: block; font-style: normal; font-size: 11px; color: #9aa1ac;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+
+.head-btn {
+  all: unset;
+  width: 24px; height: 24px;
+  display: flex; align-items: center; justify-content: center;
+  border-radius: 7px;
+  color: #94a3b8;
+  font-size: 13px;
+  cursor: pointer;
+  flex: none;
+  transition: background 0.12s, color 0.12s;
+}
+.head-btn:hover { background: rgba(15, 23, 42, 0.07); color: #334155; }
+
+/* 消息流 */
+
+.timeline {
+  flex: 1 1 auto;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  padding: 14px 15px 6px;
+  scroll-behavior: auto;
+}
+
+.msg { margin-bottom: 16px; }
+.msg:last-child { margin-bottom: 4px; }
+
+.msg-user { display: flex; flex-direction: column; align-items: flex-end; gap: 5px; }
+.msg-label {
+  font-size: 10.5px;
+  font-weight: 600;
+  color: #6366f1;
+  background: rgba(99, 102, 241, 0.09);
+  padding: 1px 8px;
+  border-radius: 999px;
+  letter-spacing: 0.02em;
+}
+.msg-quote {
+  max-width: 100%;
+  background: rgba(99, 102, 241, 0.06);
+  border-left: 2px solid rgba(99, 102, 241, 0.45);
+  border-radius: 0 9px 9px 0;
+  padding: 7px 10px;
+  font-size: 12px;
+  line-height: 1.6;
+  color: #5b6470;
+  white-space: pre-wrap;
+  word-break: break-word;
+  max-height: 132px;
+  overflow: hidden;
+  position: relative;
+}
+.msg-quote.expandable { cursor: pointer; }
+.msg-quote.expandable::after {
+  content: "展开";
+  position: absolute; right: 7px; bottom: 4px;
+  font-size: 10px; color: #6366f1;
+  background: linear-gradient(90deg, transparent, #f6f7fd 32%);
+  padding: 0 3px;
+}
+.msg-quote.expanded { max-height: 60vh; overflow-y: auto; }
+.msg-quote.expanded::after { content: "收起"; position: sticky; float: right; }
+
+.msg-question {
+  max-width: 100%;
+  background: #4f46e5;
+  color: #fff;
+  padding: 7px 11px;
+  border-radius: 11px 11px 3px 11px;
+  font-size: 12.5px;
+  line-height: 1.6;
+  word-break: break-word;
+  white-space: pre-wrap;
+}
+
+.msg-ai {
+  position: relative;
+  padding-left: 11px;
+  border-left: 2px solid rgba(99, 102, 241, 0.22);
+}
+
+.msg-body { font-size: 13.5px; line-height: 1.72; color: #1f2328; }
+.msg-body > *:first-child { margin-top: 0; }
+.msg-body > *:last-child { margin-bottom: 0; }
+.msg-body p { margin: 0 0 9px; word-break: break-word; }
+.msg-body h3, .msg-body h4, .msg-body h5, .msg-body h6 {
+  margin: 13px 0 7px; font-weight: 650; line-height: 1.4; color: #0f172a;
+}
+.msg-body h3 { font-size: 14px; }
+.msg-body h4, .msg-body h5, .msg-body h6 { font-size: 13.5px; }
+.msg-body ul, .msg-body ol { margin: 0 0 9px; padding-left: 20px; }
+.msg-body li { margin: 0 0 4px; word-break: break-word; }
+.msg-body strong { font-weight: 650; color: #0f172a; }
+.msg-body em { font-style: normal; background: rgba(250, 204, 21, 0.22); padding: 0 2px; border-radius: 3px; }
+.msg-body hr { border: none; border-top: 1px solid rgba(15, 23, 42, 0.09); margin: 11px 0; }
+.msg-body blockquote {
+  margin: 9px 0; padding: 2px 0 2px 11px;
+  border-left: 2px solid rgba(99, 102, 241, 0.4);
+  color: #475569;
+}
+.msg-body a { color: #4f46e5; text-decoration: none; border-bottom: 1px solid rgba(79, 70, 229, 0.3); }
+.msg-body a:hover { border-bottom-color: #4f46e5; }
+.msg-body code {
+  font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
+  font-size: 12px;
+  background: rgba(15, 23, 42, 0.06);
+  padding: 1.5px 5px;
+  border-radius: 4px;
+  color: #b4305c;
+  word-break: break-word;
+}
+.msg-body pre {
+  margin: 9px 0;
+  padding: 11px 12px;
+  background: #f7f8fa;
+  border: 1px solid rgba(15, 23, 42, 0.07);
+  border-radius: 10px;
+  overflow-x: auto;
+}
+.msg-body pre code {
+  background: none; padding: 0; color: #1f2328;
+  font-size: 12px; line-height: 1.62; white-space: pre;
+}
+
+.msg-actions {
+  display: flex;
+  gap: 3px;
+  margin-top: 7px;
+  opacity: 0;
+  transition: opacity 0.15s;
+}
+.msg-ai:hover .msg-actions, .msg-ai.pinned .msg-actions { opacity: 1; }
+
+.mini-btn {
+  all: unset;
+  display: flex; align-items: center; gap: 4px;
+  padding: 2.5px 8px;
+  border-radius: 6px;
+  font-size: 11px;
+  color: #8b939f;
+  cursor: pointer;
+  transition: background 0.12s, color 0.12s;
+  white-space: nowrap;
+}
+.mini-btn:hover { background: rgba(15, 23, 42, 0.06); color: #334155; }
+.mini-btn.on { color: #d97706; }
+
+.caret {
+  display: inline-block;
+  width: 6px; height: 14px;
+  margin-left: 2px;
+  vertical-align: -3px;
+  background: #6366f1;
+  border-radius: 1px;
+  animation: arc-blink 1s steps(2, start) infinite;
+}
+@keyframes arc-blink { to { visibility: hidden; } }
+
+.skeleton { display: flex; flex-direction: column; gap: 8px; padding: 3px 0; }
+.skeleton i {
+  display: block; height: 10px; border-radius: 5px;
+  background: linear-gradient(90deg, rgba(15,23,42,0.07) 25%, rgba(15,23,42,0.13) 37%, rgba(15,23,42,0.07) 63%);
+  background-size: 400% 100%;
+  animation: arc-shimmer 1.3s ease-in-out infinite;
+}
+.skeleton i:nth-child(1) { width: 100%; }
+.skeleton i:nth-child(2) { width: 90%; }
+.skeleton i:nth-child(3) { width: 64%; }
+@keyframes arc-shimmer { 0% { background-position: 100% 0; } 100% { background-position: 0 0; } }
+
+.err {
+  padding: 10px 12px;
+  border-radius: 10px;
+  background: rgba(220, 38, 38, 0.06);
+  border: 1px solid rgba(220, 38, 38, 0.18);
+  color: #b91c1c;
+  font-size: 12.5px;
+  line-height: 1.65;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+.err-actions { margin-top: 8px; display: flex; gap: 6px; }
+.err-btn {
+  all: unset;
+  padding: 4px 11px;
+  border-radius: 7px;
+  background: #b91c1c;
+  color: #fff;
+  font-size: 11.5px;
+  cursor: pointer;
+}
+.err-btn.ghost { background: rgba(185, 28, 28, 0.1); color: #b91c1c; }
+
+/* 输入区 / 状态栏 */
+
+.panel-composer {
+  display: flex;
+  gap: 8px;
+  align-items: flex-end;
+  padding: 10px 12px;
+  border-top: 1px solid rgba(15, 23, 42, 0.07);
+  background: #fcfcfd;
+  flex: none;
+}
+
+.input {
+  all: unset;
+  flex: 1;
+  min-height: 34px;
+  max-height: 132px;
+  padding: 7px 11px;
+  border: 1px solid rgba(15, 23, 42, 0.12);
+  border-radius: 10px;
+  background: #fff;
+  font: 400 13px/1.55 inherit;
+  font-family: inherit;
+  color: #1f2328;
+  resize: none;
+  overflow-y: auto;
+  display: block;
+}
+.input:focus { border-color: #6366f1; box-shadow: 0 0 0 3px rgba(99, 102, 241, 0.13); }
+.input::placeholder { color: #a3aab6; }
+
+.send {
+  all: unset;
+  flex: none;
+  height: 34px;
+  padding: 0 15px;
+  border-radius: 10px;
+  background: #4f46e5;
+  color: #fff;
+  font-size: 13px;
+  font-weight: 500;
+  cursor: pointer;
+  display: flex; align-items: center;
+  transition: background 0.13s;
+}
+.send:hover { background: #4338ca; }
+.send:disabled { background: #cbd5e1; cursor: default; }
+
+.panel-foot {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 7px 12px;
+  border-top: 1px solid rgba(15, 23, 42, 0.06);
+  background: #fcfcfd;
+  flex: none;
+}
+
+.status {
+  flex: 1;
+  font-size: 11px;
+  color: #9aa1ac;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* 最小化后的悬浮球 */
+
+.mini {
+  all: unset;
+  position: fixed;
+  right: 14px;
+  top: 50%;
+  transform: translateY(-50%);
+  width: 46px;
+  height: 46px;
+  border-radius: 50%;
+  background: linear-gradient(135deg, #6366f1, #8b5cf6);
+  color: #fff;
+  font: 600 12px/1 -apple-system, "Segoe UI", sans-serif;
+  display: flex; align-items: center; justify-content: center;
+  cursor: pointer;
+  box-shadow: 0 8px 22px rgba(99, 102, 241, 0.4);
+  transition: transform 0.15s;
+  z-index: 3;
+}
+.mini:hover { transform: translateY(-50%) scale(1.07); }
+.mini .mini-badge {
+  position: absolute;
+  top: -3px; right: -3px;
+  min-width: 17px; height: 17px;
+  padding: 0 4px;
+  border-radius: 999px;
+  background: #ef4444;
+  color: #fff;
+  font-size: 10px;
+  font-weight: 700;
+  display: flex; align-items: center; justify-content: center;
+  box-shadow: 0 0 0 2px #fff;
+}
+
+/* 滚动条 */
+
+.timeline::-webkit-scrollbar, .msg-quote::-webkit-scrollbar { width: 8px; height: 8px; }
+.timeline::-webkit-scrollbar-thumb, .msg-quote::-webkit-scrollbar-thumb {
+  background: rgba(15, 23, 42, 0.16); border-radius: 4px;
+}
+.timeline::-webkit-scrollbar-thumb:hover, .msg-quote::-webkit-scrollbar-thumb:hover {
+  background: rgba(15, 23, 42, 0.3);
+}
+.timeline::-webkit-scrollbar-track, .msg-quote::-webkit-scrollbar-track { background: transparent; }
+
+[hidden] { display: none !important; }
+
+/* ---------- 深色 ---------- */
+
+@media (prefers-color-scheme: dark) {
+  .pop {
+    background: #1d2025; border-color: rgba(255, 255, 255, 0.1);
+    box-shadow: 0 14px 36px rgba(0, 0, 0, 0.5);
+  }
+  .pop-quote { color: #8b93a1; border-left-color: rgba(129, 140, 248, 0.5); }
+  .chip { background: #262a30; border-color: rgba(255, 255, 255, 0.11); color: #cbd5e1; }
+  .chip:hover { border-color: #818cf8; color: #a5b4fc; background: rgba(129, 140, 248, 0.13); }
+  .chip.primary { background: #4f46e5; border-color: #4f46e5; color: #fff; }
+
+  .panel {
+    background: #1d2025;
+    border-left-color: rgba(255, 255, 255, 0.1);
+    box-shadow: -12px 0 40px rgba(0, 0, 0, 0.5);
+  }
+  .panel-head {
+    border-bottom-color: rgba(255, 255, 255, 0.07);
+    background: linear-gradient(180deg, rgba(129, 140, 248, 0.09), rgba(129, 140, 248, 0));
+  }
+  .panel-title b { color: #a5b4fc; }
+  .panel-sub { color: #6f7784; }
+  .head-btn { color: #6b7280; }
+  .head-btn:hover { background: rgba(255, 255, 255, 0.09); color: #cbd5e1; }
+
+  .msg-label { color: #a5b4fc; background: rgba(129, 140, 248, 0.14); }
+  .msg-quote {
+    background: rgba(129, 140, 248, 0.1);
+    border-left-color: rgba(129, 140, 248, 0.5);
+    color: #a8b0bd;
+  }
+  .msg-quote.expandable::after { background: linear-gradient(90deg, transparent, #23262c 32%); color: #a5b4fc; }
+  .msg-ai { border-left-color: rgba(129, 140, 248, 0.28); }
+  .msg-body { color: #e3e5e8; }
+  .msg-body h3, .msg-body h4, .msg-body h5, .msg-body h6, .msg-body strong { color: #f1f3f5; }
+  .msg-body em { background: rgba(250, 204, 21, 0.2); }
+  .msg-body hr { border-top-color: rgba(255, 255, 255, 0.1); }
+  .msg-body blockquote { color: #a8b0bd; border-left-color: rgba(129, 140, 248, 0.45); }
+  .msg-body a { color: #a5b4fc; border-bottom-color: rgba(165, 180, 252, 0.35); }
+  .msg-body code { background: rgba(255, 255, 255, 0.09); color: #f0a0c0; }
+  .msg-body pre { background: #15181c; border-color: rgba(255, 255, 255, 0.08); }
+  .msg-body pre code { color: #dfe3e8; }
+  .skeleton i {
+    background: linear-gradient(90deg, rgba(255,255,255,0.07) 25%, rgba(255,255,255,0.14) 37%, rgba(255,255,255,0.07) 63%);
+    background-size: 400% 100%;
+  }
+  .err { background: rgba(248, 113, 113, 0.1); border-color: rgba(248, 113, 113, 0.28); color: #fca5a5; }
+  .err-btn { background: #dc2626; }
+  .err-btn.ghost { background: rgba(248, 113, 113, 0.15); color: #fca5a5; }
+  .mini-btn { color: #8b93a1; }
+  .mini-btn:hover { background: rgba(255, 255, 255, 0.08); color: #cbd5e1; }
+  .mini-btn.on { color: #fbbf24; }
+  .panel-composer, .panel-foot { background: #191c20; border-top-color: rgba(255, 255, 255, 0.07); }
+  .input { background: #262a30; border-color: rgba(255, 255, 255, 0.12); color: #e3e5e8; }
+  .input::placeholder { color: #6b7280; }
+  .send { background: #4f46e5; }
+  .send:hover { background: #6366f1; }
+  .send:disabled { background: #3a3f47; }
+  .status { color: #6f7784; }
+  .mini .mini-badge { box-shadow: 0 0 0 2px #1d2025; }
+  .timeline::-webkit-scrollbar-thumb, .msg-quote::-webkit-scrollbar-thumb { background: rgba(255, 255, 255, 0.16); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .pop, .panel, .caret, .skeleton i { animation: none !important; }
+}
+</style>
+</head>
+<body>
+
+<main class="page">
+  <h1>HTTP 缓存的四种失效策略</h1>
+  <div class="lead">模拟一篇正在阅读的技术文档</div>
+
+  <p>当浏览器再次请求同一资源时，会先检查本地缓存是否仍然可用。这依赖响应头中的一组指令，
+  其中最常被讨论的是 <mark>Cache-Control</mark> 与 <code>ETag</code> 之间的分工。</p>
+
+  <h2>强缓存与协商缓存</h2>
+  <p>强缓存命中时浏览器不会发出任何网络请求，直接使用本地副本；
+  它的判断依据是 <code>max-age</code> 或 <code>Expires</code>。
+  一旦过期，就进入协商缓存阶段。</p>
+
+  <p>协商缓存会带着 <code>If-None-Match</code> 回源，服务端如果认为内容没变，
+  就返回 304，省掉响应体的传输。这时 <mark>ETag 的生成方式</mark>就成了性能与正确性的取舍点。</p>
+
+  <h2>为什么 ETag 有时不如 Last-Modified</h2>
+  <p>在多台机器上生成的 ETag 往往互不相同，同一份内容会被判定为「变了」，
+  在不该回源的地方反复回源。这就是分布式部署下常见的 ETag 抖动问题。</p>
+</main>
+
+<div class="note">
+  <b>这是静态预览</b><br>
+  样式与结构直接抽取自 <code>content/content.js</code>，不是另画的一版。<br>
+  阴影跟随系统主题，可切换深色模式查看。
+</div>
+
+<!-- ======== 以下 DOM 由 tools/make_preview.mjs 从 content/content.js 抽取 ======== -->
+
+<div class="pop" style="left: 430px; top: 226px; visibility: visible;">
+  <div class="pop-quote"></div>
+  <div class="pop-chips"></div>
+</div>
+
+<button class="mini" style="display: none;" title="展开 AI 阅读助手"><span>AI</span></button>
+
+<aside class="panel">
+  <div class="panel-resize" title="拖动调整宽度"></div>
+  <header class="panel-head">
+    <span class="dot"></span>
+    <div class="panel-title">
+      <b>AI 阅读助手</b>
+      <i class="panel-sub"></i>
+    </div>
+    <button class="head-btn" data-act="options" title="打开设置">⚙</button>
+    <button class="head-btn" data-act="minimize" title="最小化">—</button>
+    <button class="head-btn" data-act="close" title="结束对话 (Esc)">✕</button>
+  </header>
+
+  <div class="timeline"></div>
+
+  <div class="panel-composer">
+    <textarea class="input" rows="1" placeholder="继续追问…（Enter 发送，Shift+Enter 换行）"></textarea>
+    <button class="send" data-act="send">发送</button>
+  </div>
+
+  <div class="panel-foot">
+    <span class="status"></span>
+    <button class="mini-btn" data-act="copy-all" title="复制整段对话">复制全部</button>
+    <button class="mini-btn" data-act="star-last" title="收藏最后一条回答">☆ 收藏</button>
+  </div>
+</aside>
+
+<script>
+// 预览页把面板内容补成一段真实问答，方便看排版密度
+const timeline = document.querySelector('.timeline');
+timeline.innerHTML = `
+  <div class="msg msg-user">
+    <div class="msg-label">解释</div>
+    <div class="msg-quote">协商缓存会带着 If-None-Match 回源，服务端如果认为内容没变，就返回 304，省掉响应体的传输。这时 ETag 的生成方式就成了性能与正确性的取舍点。</div>
+  </div>
+  <div class="msg msg-ai">
+    <div class="msg-body">
+      <p><strong>ETag 是服务端给资源算的一枚指纹</strong>，用于回答「这份内容还是上次那份吗」。</p>
+      <p>问题出在指纹的算法：如果每台机器按自己的元数据生成，同一份内容在不同节点会得到不同指纹。</p>
+      <ul>
+        <li><strong>抖动</strong>：内容没变却判为变了，304 失效，白白回源</li>
+        <li><strong>失效</strong>：只按文件大小取指纹，改动等长内容时检测不到</li>
+        <li><strong>开销</strong>：大文件全量哈希，CPU 成本高</li>
+      </ul>
+      <p>常见做法是：静态资源用「内容哈希 + 版本号」，动态资源改用 <code>Last-Modified</code>，或直接 <code>Cache-Control: no-cache</code> 交给业务判断。</p>
+      <blockquote>一句话记住：ETag 要能跨节点稳定复现，否则它只是个添乱的随机数。</blockquote>
+    </div>
+    <div class="msg-actions">
+      <button class="mini-btn">复制</button>
+      <button class="mini-btn">☆ 收藏</button>
+      <button class="mini-btn">重答</button>
+    </div>
+  </div>
+`;
+document.querySelector('.panel-sub').textContent = 'HTTP 缓存的四种失效策略';
+document.querySelector('.status').textContent = 'deepseek-chat · 1.8s · 已存档';
+document.querySelector('.msg-ai').classList.add('pinned');
+</script>
+
+</body>
+</html>

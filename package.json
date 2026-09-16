@@ -1,0 +1,20 @@
+{
+  "name": "ai-reader",
+  "version": "1.1.0",
+  "private": true,
+  "type": "module",
+  "description": "划词即问的浏览器阅读助手：选中网页文字，用你自己的大模型即时解释、翻译、追问，答案自动存档并可导出 Markdown。",
+  "license": "Apache-2.0",
+  "scripts": {
+    "test": "node tools/selftest.mjs",
+    "preview": "node tools/make_preview.mjs",
+    "icons": "python tools/make_icons.py"
+  },
+  "keywords": [
+    "chrome-extension",
+    "manifest-v3",
+    "llm",
+    "reading",
+    "openai"
+  ]
+}
