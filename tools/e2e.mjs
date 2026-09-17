@@ -50,6 +50,16 @@ const SNAPSHOT = `(() => {
   out.panelHidden = q('.panel').hidden;
   out.panelBox = box(q('.panel'));
   out.timelineMsgCount = sr.querySelectorAll('.timeline .msg').length;
+  out.bodyText = (q('.msg-body') || {}).textContent || '';
+
+  // 分层回答的折叠区
+  const moreBtn = q('.more-btn');
+  out.more = moreBtn
+    ? { label: moreBtn.textContent.trim(), expanded: moreBtn.getAttribute('aria-expanded'), box: box(moreBtn) }
+    : null;
+  const moreBody = q('.more-body');
+  out.moreBodyHidden = moreBody ? moreBody.hidden : null;
+  out.moreBodyText = moreBody ? moreBody.textContent.trim() : '';
   return out;
 })()`;
 
@@ -173,6 +183,112 @@ async function main() {
       logs.some((l) => l.startsWith('click -> .chip')),
       '若 click 落在 #para / HTML 上，说明 mousedown 时按钮被隐藏，click 没能派发到它'
     );
+
+    /* ---------------------------------------------------------------- */
+
+    console.log('\n【7】双击选词 → 直接提问（零动作路径）');
+    await cdp.navigate(HARNESS);
+    await sleep(400);
+
+    const para2 = await cdp.eval(`(() => { const r = document.getElementById('para').getBoundingClientRect();
+      return { left: r.left, top: r.top }; })()`);
+    await cdp.doubleClickAt(para2.left + 20, para2.top + 10);
+    await sleep(600); // 覆盖「等三击」的 180ms 窗口 + 一次渲染
+
+    const word = await cdp.eval('String(window.getSelection())');
+    check('双击确实选中了文本（浏览器原生选词）', word.trim().length > 0, `选中：${JSON.stringify(word)}`);
+
+    snap = await cdp.eval(SNAPSHOT);
+    check('双击时气泡完全不出现', snap.popHidden === true, '零动作路径不该再让用户点一次气泡');
+    check('双击后右侧面板直接弹出', snap.panelHidden === false);
+
+    const posted2 = await cdp.eval('window.__port.posted');
+    check('双击已直接发起提问', posted2.length === 1, `实际 ${posted2.length} 条`);
+    check(
+      '用的是设置里「双击时用的动作」',
+      posted2[0]?.payload?.mode === 'explain',
+      `实际 mode=${posted2[0]?.payload?.mode}`
+    );
+
+    /* ---------------------------------------------------------------- */
+
+    console.log('\n【8】分层回答：结论层先行，展开层默认折叠');
+    const reqId = posted2[0]?.reqId;
+
+    await cdp.eval(`(() => {
+      const id = ${JSON.stringify(reqId)};
+      window.__emit({ type: 'start', reqId: id, model: 'stub-model' });
+      window.__emit({ type: 'delta', reqId: id, part: 'brief', text: '注意力机制是让模型按相关度分配权重。' });
+    })()`);
+    await sleep(200);
+
+    snap = await cdp.eval(SNAPSHOT);
+    check('结论层已渲染', snap.bodyText.includes('按相关度分配权重'));
+    check('后端还没给出展开层时，不显示折叠按钮', snap.more === null, `实际：${JSON.stringify(snap.more)}`);
+
+    await cdp.eval(`(() => {
+      const id = ${JSON.stringify(reqId)};
+      window.__emit({ type: 'delta', reqId: id, part: 'detail', text: '它最早来自机器翻译任务，' });
+      window.__emit({ type: 'delta', reqId: id, part: 'detail', text: '后来成为大语言模型的基础组件。' });
+    })()`);
+    await sleep(200);
+
+    snap = await cdp.eval(SNAPSHOT);
+    check('出现「展开细节」按钮', !!snap.more, `实际：${JSON.stringify(snap.more)}`);
+    check('展开层默认折叠', snap.moreBodyHidden === true, '默认展开就等于没分层');
+    check(
+      '折叠区里已有内容（流式期间就在填充，不必等生成完）',
+      snap.moreBodyText.includes('机器翻译任务'),
+      `实际：${JSON.stringify(snap.moreBodyText.slice(0, 40))}`
+    );
+
+    await cdp.clickAt(snap.more.box.x, snap.more.box.y);
+    await sleep(200);
+    snap = await cdp.eval(SNAPSHOT);
+    check('点击后展开层显示出来', snap.moreBodyHidden === false);
+    check('按钮文案切换为「收起细节」', snap.more.label.includes('收起细节'), `实际：${snap.more.label}`);
+    check('展开状态写回 turn（aria-expanded=true）', snap.more.expanded === 'true');
+
+    // 这条是折叠状态存在 turn 上而不是 DOM 上的理由：
+    // 流式每来一段增量都会重写 innerHTML，状态若挂在 DOM 上就会被重置回折叠。
+    await cdp.eval(`window.__emit({ type: 'delta', reqId: ${JSON.stringify(reqId)}, part: 'detail', text: '补一句。' })`);
+    await sleep(200);
+    snap = await cdp.eval(SNAPSHOT);
+    check(
+      '流式增量重绘后展开状态没丢',
+      snap.moreBodyHidden === false && snap.more.expanded === 'true',
+      '重新渲染后折叠回去了，说明状态存在 DOM 上'
+    );
+
+    await cdp.eval(`(() => {
+      window.__emit({ type: 'done', reqId: ${JSON.stringify(reqId)},
+        answer: '注意力机制是让模型按相关度分配权重。',
+        detail: '它最早来自机器翻译任务，后来成为大语言模型的基础组件。补一句。',
+        saved: true, recordId: 'stub-record', elapsed: 820, model: 'stub-model' });
+    })()`);
+    await sleep(200);
+    snap = await cdp.eval(SNAPSHOT);
+    check('完成后按钮提示改为字数', /字/.test(snap.more.label), `实际：${snap.more.label}`);
+    check('完成后展开状态保持不变', snap.moreBodyHidden === false);
+
+    /* ---------------------------------------------------------------- */
+
+    console.log('\n【9】三击选中整段 → 不该走「双击即问」');
+    await cdp.navigate(HARNESS);
+    await sleep(400);
+    const para3 = await cdp.eval(`(() => { const r = document.getElementById('para').getBoundingClientRect();
+      return { left: r.left, top: r.top }; })()`);
+    await cdp.tripleClickAt(para3.left + 20, para3.top + 10);
+    await sleep(600);
+
+    snap = await cdp.eval(SNAPSHOT);
+    const posted3 = await cdp.eval('window.__port.posted');
+    check(
+      '三击没有直接发问',
+      posted3.length === 0,
+      `实际发了 ${posted3.length} 条 —— 双击即问把三击也吞掉了，用户就没法「选整段再挑动作」`
+    );
+    check('三击走常规流程：气泡浮出，动作由用户挑', snap.popHidden === false);
   } finally {
     await close();
   }

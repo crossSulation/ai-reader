@@ -16,7 +16,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import { buildEndpoint, originPatternOf } from '../lib/llm.js';
-import { buildMessages, MODES } from '../lib/prompts.js';
+import { buildMessages, MODES, LAYER_MARKER, splitLayered, createLayerSplitter } from '../lib/prompts.js';
 import { recordId, toMarkdown, domainOf } from '../lib/store.js';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
@@ -163,7 +163,17 @@ test('system 在最前，user 在最后，包含选区与任务', () => {
   const last = msgs[msgs.length - 1].content;
   assert.ok(last.includes('<<<SELECTION\nTCP 三次握手\nSELECTION>>>'));
   assert.ok(last.includes('网络笔记'));
+  // 默认分层：任务区 = 结论层指令 + 分层规则 + 展开层指令
+  assert.ok(last.includes(MODES.explain.brief.slice(0, 20)));
+  assert.ok(last.includes(MODES.explain.detail.slice(0, 20)));
+  assert.ok(last.includes(LAYER_MARKER));
+});
+
+test('layered: false 回退到单层指令，且不再要求模型输出标记', () => {
+  const msgs = buildMessages({ mode: 'explain', selection: '某段文字', layered: false });
+  const last = msgs[msgs.length - 1].content;
   assert.ok(last.includes(MODES.explain.instruction.slice(0, 20)));
+  assert.ok(!last.includes(LAYER_MARKER), '关掉分层后不该再让模型输出分隔标记');
 });
 
 test('防注入：选区里藏指令不会改变 system 的角色边界', () => {
@@ -351,6 +361,32 @@ test('隐藏气泡前必须先判断事件是否来自气泡自己', () => {
   );
 });
 
+test('复制与存档必须带上展开层，不能只给结论层', () => {
+  // 折叠只是显示状态。用户没点开 ≠ 不想要那部分内容 ——
+  // 复制出来只有半截答案，是最容易被忽略、也最招人烦的一类 bug。
+  const at = contentSrc.indexOf('function turnAsMarkdown(');
+  const body = contentSrc.slice(at, contentSrc.indexOf('async function copyTurn('));
+  assert.ok(body.includes('turnFullAnswer(turn)'), 'turnAsMarkdown 没有走 turnFullAnswer，展开层会丢');
+
+  const starAt = contentSrc.indexOf('async function starTurn(');
+  const star = contentSrc.slice(starAt, starAt + 1200);
+  assert.ok(star.includes('detail: turn.detail'), '手动存档没有把展开层写进记录');
+});
+
+test('展开状态必须记在 turn 上，不能只挂在 DOM 上', () => {
+  // 流式期间每来一段增量都会重写 .msg-body 的 innerHTML：
+  // 状态若只存在 DOM 属性里，用户刚点开的细节会被下一次重绘悄悄折叠回去。
+  const at = contentSrc.indexOf('function paintBody(');
+  const paint = contentSrc.slice(at, contentSrc.indexOf('function repaintTurn('));
+  assert.ok(paint.includes('turn.expanded'), 'paintBody 没有从 turn 读取展开状态');
+
+  const toggleAt = contentSrc.indexOf('function toggleDetail(');
+  assert.ok(
+    contentSrc.slice(toggleAt, toggleAt + 400).includes('turn.expanded = !turn.expanded'),
+    'toggleDetail 没有把状态写回 turn'
+  );
+});
+
 /* ------------------------------------------------------------------ */
 /* 页面级守卫：HTML / CSS / JS 三者之间的约定                           */
 /* ------------------------------------------------------------------ */
@@ -435,6 +471,118 @@ test('JS 里引用的元素 id 在对应 HTML 里都存在', () => {
     }
   }
   assert.deepEqual(missing, [], missing.join('\n'));
+});
+
+/* ------------------------------------------------------------------ */
+/* 分层输出：标记跨 chunk 的增量解析                                    */
+/* ------------------------------------------------------------------ */
+
+console.log('\n[7] 分层输出解析（lib/prompts.js）');
+
+const SAMPLE_BRIEF = '一句话结论：三次握手是为了确认双方的收发能力都正常。';
+const SAMPLE_DETAIL = '第一次握手：客户端发送 SYN。\n\n第二次握手：服务端回 SYN+ACK。\n\n易错点：半连接队列会被填满。';
+const SAMPLE = `${SAMPLE_BRIEF}\n\n${LAYER_MARKER}\n\n${SAMPLE_DETAIL}`;
+
+test('一次性输入：剥掉标记，切出结论层与展开层', () => {
+  const r = splitLayered(SAMPLE);
+  assert.equal(r.brief, SAMPLE_BRIEF);
+  assert.equal(r.detail, SAMPLE_DETAIL);
+  assert.equal(r.hasDetail, true);
+  assert.ok(
+    !r.brief.includes('MORE') && !r.detail.includes('MORE'),
+    '分隔标记必须被彻底剔除 —— 漏进正文或存档里就是脏数据'
+  );
+});
+
+test('模型没输出标记时：整体作为结论层，优雅降级', () => {
+  const r = splitLayered('只回答了一句话。');
+  assert.equal(r.brief, '只回答了一句话。');
+  assert.equal(r.detail, '');
+  assert.equal(r.hasDetail, false);
+});
+
+test('逐字符推送的结果与一次性输入完全一致', () => {
+  // 这条是分层解析最重要的回归。标记是**跨 chunk** 到达的：
+  // 实现若漏掉「还看不出要不要吞掉的那截尾巴」，逐字符推送就会把 `<<<MO`
+  // 当成正文发出去 —— 流式渲染是增量的，发出去就再也删不掉。
+  const chunks = [];
+  const sp = createLayerSplitter((text, part) => chunks.push([part, text]));
+  for (const ch of SAMPLE) sp.push(ch);
+  const r = sp.finish();
+
+  assert.equal(r.brief, SAMPLE_BRIEF);
+  assert.equal(r.detail, SAMPLE_DETAIL);
+
+  const briefText = chunks.filter(([p]) => p === 'brief').map(([, t]) => t).join('');
+  const detailText = chunks.filter(([p]) => p === 'detail').map(([, t]) => t).join('');
+  assert.equal(briefText, SAMPLE_BRIEF, '结论层边发边拼必须还原出原文');
+  assert.equal(detailText, SAMPLE_DETAIL, '展开层边发边拼必须还原出原文');
+
+  const firstDetail = chunks.findIndex(([p]) => p === 'detail');
+  const lastBrief = chunks.map(([p]) => p).lastIndexOf('brief');
+  assert.ok(
+    firstDetail === -1 || lastBrief < firstDetail,
+    '必须先发完结论层再发展开层，否则页面上两段内容的先后顺序会错乱'
+  );
+});
+
+test('标记正好被切成两半时，前半截不能漏进结论层', () => {
+  const emitted = [];
+  const sp = createLayerSplitter((text, part) => emitted.push([part, text]));
+  sp.push('结论在这里。');
+  sp.push('<<<MO'); // 标记的前半截
+  sp.push('RE>>>');
+  sp.push('细节在这里。');
+  const r = sp.finish();
+
+  assert.equal(r.brief, '结论在这里。');
+  assert.equal(r.detail, '细节在这里。');
+  const briefText = emitted.filter(([p]) => p === 'brief').map(([, t]) => t).join('');
+  assert.equal(briefText, '结论在这里。', '半截标记漏进了结论层');
+});
+
+test('标记拆成三片陆续到达也能识别', () => {
+  const sp = createLayerSplitter(() => {});
+  sp.push('结论');
+  sp.push('<<<');
+  sp.push('MORE');
+  sp.push('>>>');
+  const r = sp.finish();
+  assert.equal(r.brief, '结论');
+  assert.equal(r.detail, '');
+  assert.equal(r.hasDetail, false, '只有标记、后面没有内容时不该出现空的折叠区');
+});
+
+test('兼容模型偶尔写出的 <!--MORE--> 变体', () => {
+  const r = splitLayered('结论\n\n<!--MORE-->\n\n细节');
+  assert.equal(r.brief, '结论');
+  assert.equal(r.detail, '细节');
+});
+
+test('标记在开头时不产生空的结论层（服务端会把展开层提上来兜底）', () => {
+  const r = splitLayered(`${LAYER_MARKER}\n\n只有展开层`);
+  assert.equal(r.brief, '');
+  assert.equal(r.detail, '只有展开层');
+});
+
+test('只切第一个标记，展开层内部再出现标记不重复切分', () => {
+  const r = splitLayered(`结论\n${LAYER_MARKER}\n细节\n${LAYER_MARKER}\n更多`);
+  assert.equal(r.brief, '结论');
+  assert.ok(r.detail.includes(LAYER_MARKER), '展开层里的同类文本应当原样保留');
+});
+
+test('分隔标记的字面量只允许出现在 lib/prompts.js', () => {
+  // 解析统一在 service worker 完成，结果通过 delta 的 part 字段下发。
+  // content.js 若要自己认标记，就等于又有了第二个真相 —— 两边一定会漂移。
+  const dup = [];
+  for (const rel of ['content/content.js', 'background/service-worker.js']) {
+    if (fs.readFileSync(path.join(root, rel), 'utf8').includes(LAYER_MARKER)) dup.push(rel);
+  }
+  assert.deepEqual(
+    dup,
+    [],
+    `${dup.join('、')} 里出现了分隔标记的字面量，解析逻辑应当只留在 lib/prompts.js`
+  );
 });
 
 /* ------------------------------------------------------------------ */

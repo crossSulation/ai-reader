@@ -41,6 +41,12 @@
     autoSave: true,
     panelWidth: 400,
     disabledDomains: [],
+    // 零动作触发：双击选词直接提问。与 trigger 相互独立 ——
+    // 「不要气泡、但要双击即问」这种组合需要靠两个开关分别表达。
+    dblclickAsk: true,
+    quickAskMode: 'explain',
+    // 分层回答：结论层先行，展开层折叠
+    layered: true,
   };
 
   const PANEL_MIN_WIDTH = 300;
@@ -67,6 +73,17 @@
   let popoverRenderKey = '';
   let lastSelectionText = '';
   let statusTimer = null;
+
+  /**
+   * 最近一次 mousedown 的连击序号（1 单击 / 2 双击 / 3 三击）。
+   *
+   * 双击选词要「直接提问」，三击选段要「先给气泡让用户挑动作」——
+   * 两者意图不同，所以必须在 mouseup 时知道这一下是第几次点击。
+   * mouseup 自己的 detail 也带着这个信息，但以 mousedown 为准更稳：
+   * 三击时 mousedown 已经把指针置为 3，而 mouseup 有可能在中间被打断。
+   */
+  let pointerDetail = 1;
+  let quickAskTimer = null;
 
   const uid = () => `t${Date.now().toString(36)}${Math.random().toString(36).slice(2, 6)}`;
 
@@ -528,6 +545,48 @@
   font-size: 12px; line-height: 1.62; white-space: pre;
 }
 
+/* ---------- 分层回答：展开层折叠区 ---------- */
+
+.more { margin-top: 10px; }
+
+.more-btn {
+  all: unset;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 5px 10px 5px 8px;
+  border-radius: 8px;
+  font-size: 12px;
+  color: #4f46e5;
+  background: rgba(79, 70, 229, 0.07);
+  cursor: pointer;
+  transition: background 0.12s;
+}
+.more-btn:hover { background: rgba(79, 70, 229, 0.14); }
+
+.more-caret {
+  width: 0; height: 0;
+  border-left: 5px solid currentColor;
+  border-top: 4px solid transparent;
+  border-bottom: 4px solid transparent;
+  transition: transform 0.15s;
+}
+.more-btn[aria-expanded="true"] .more-caret { transform: rotate(90deg); }
+
+.more-hint { color: #9aa1ac; font-size: 11px; }
+
+.more-body {
+  margin-top: 10px;
+  padding-left: 11px;
+  border-left: 2px solid rgba(79, 70, 229, 0.18);
+  animation: moreIn 0.16s ease-out;
+}
+
+@keyframes moreIn {
+  from { opacity: 0; transform: translateY(-3px); }
+  to { opacity: 1; transform: none; }
+}
+
 .msg-actions {
   display: flex;
   gap: 3px;
@@ -765,6 +824,10 @@
   .mini-btn { color: #8b93a1; }
   .mini-btn:hover { background: rgba(255, 255, 255, 0.08); color: #cbd5e1; }
   .mini-btn.on { color: #fbbf24; }
+  .more-btn { color: #a5b4fc; background: rgba(129, 140, 248, 0.12); }
+  .more-btn:hover { background: rgba(129, 140, 248, 0.2); }
+  .more-hint { color: #6f7784; }
+  .more-body { border-left-color: rgba(129, 140, 248, 0.28); }
   .panel-composer, .panel-foot { background: #191c20; border-top-color: rgba(255, 255, 255, 0.07); }
   .input { background: #262a30; border-color: rgba(255, 255, 255, 0.12); color: #e3e5e8; }
   .input::placeholder { color: #6b7280; }
@@ -777,7 +840,7 @@
 }
 
 @media (prefers-reduced-motion: reduce) {
-  .pop, .panel, .caret, .skeleton i { animation: none !important; }
+  .pop, .panel, .caret, .skeleton i, .more-body { animation: none !important; }
 }
 `;
 
@@ -1144,6 +1207,13 @@
     return wrap;
   }
 
+  /**
+   * 渲染一条回答。
+   *
+   * 分层模式下这里会多出一个折叠区：展开层在流式期间就在持续填充，
+   * 但默认收着 —— 用户只读结论层就够了，想看细节再点开。
+   * 折叠状态存在 turn 上（而不是 DOM 上），因为流式期间每次重绘都会重建这段 DOM。
+   */
   function paintBody(bodyEl, turn) {
     if (turn.status === 'pending' && !turn.answer) {
       bodyEl.innerHTML = '<div class="skeleton"><i></i><i></i><i></i></div>';
@@ -1157,8 +1227,49 @@
       bodyEl.innerHTML = `<div class="err">${escapeHtml(turn.error || '出错了')}</div>${actions}`;
       return;
     }
-    bodyEl.innerHTML =
-      renderMarkdown(turn.answer) + (turn.status === 'pending' ? '<span class="caret"></span>' : '');
+
+    const streaming = turn.status === 'pending';
+    const detail = turn.detail || '';
+    let html = renderMarkdown(turn.answer);
+    if (streaming) html += '<span class="caret"></span>';
+
+    if (detail) {
+      const hint = streaming ? '补充中…' : `${detail.length} 字`;
+      const expanded = !!turn.expanded;
+      html +=
+        `<div class="more">` +
+        `<button class="more-btn" data-act="toggle-detail" data-id="${escapeHtml(turn.id)}"` +
+        ` aria-expanded="${expanded ? 'true' : 'false'}">` +
+        `<span class="more-caret"></span>` +
+        `<span>${expanded ? '收起细节' : '展开细节'}</span>` +
+        `<span class="more-hint">${hint}</span>` +
+        `</button>` +
+        `<div class="more-body"${expanded ? '' : ' hidden'}>${renderMarkdown(detail)}</div>` +
+        `</div>`;
+    }
+
+    bodyEl.innerHTML = html;
+  }
+
+  /** 只重绘某一条回答（用于展开/收起，避免整个时间线重建带来的滚动跳动） */
+  function repaintTurn(turnId) {
+    const turn = session?.turns.find((t) => t.id === turnId);
+    const node = els?.timeline.querySelector(`.msg-ai[data-turn="${turnId}"] .msg-body`);
+    if (!turn || !node) {
+      renderTimeline();
+      return;
+    }
+    const nearBottom = isNearBottom();
+    paintBody(node, turn);
+    if (nearBottom) scrollTimelineToBottom();
+  }
+
+  /** 折叠状态切换。流式期间也允许展开 —— 有人就是想看它一点点长出来。 */
+  function toggleDetail(turnId) {
+    const turn = session?.turns.find((t) => t.id === turnId);
+    if (!turn) return;
+    turn.expanded = !turn.expanded;
+    repaintTurn(turnId);
   }
 
   function renderTimeline() {
@@ -1230,6 +1341,11 @@
       selection,
       context,
       answer: '',
+      // 分层回答的展开层；服务端没分层时它一直是空串
+      detail: '',
+      // 「深入」这个动作本身就是冲着细节去的，默认替用户展开；
+      // 其余动作一律先给结论层，需要再看细节。
+      expanded: mode === 'deeper',
       status: 'pending',
       error: '',
       errorCode: '',
@@ -1253,6 +1369,7 @@
     setStarButton(false);
 
     // 多轮上下文：把已完成的历史轮次带上（当前轮走 selection/context 通道）
+    // 带上完整答案（含展开层），否则用户接着问「展开讲讲第三点」时模型看不到那部分
     const history = [];
     for (const t of session.turns.slice(0, -1)) {
       if (t.status !== 'done' || !t.answer) continue;
@@ -1262,7 +1379,7 @@
           ? `${t.question}`
           : `请${MODE_LABEL[t.mode] || '解释'}这段内容：${String(t.selection).slice(0, 200)}`,
       });
-      history.push({ role: 'assistant', content: t.answer });
+      history.push({ role: 'assistant', content: turnFullAnswer(t) });
     }
 
     try {
@@ -1316,14 +1433,20 @@
         turn.model = msg.model || '';
         break;
 
-      case 'delta':
-        turn.answer += msg.text || '';
+      case 'delta': {
+        // part 由 service worker 给出（分层标记的解析在那边完成，这里不碰标记本身）：
+        // 'detail' 进折叠区，其余一律当结论层
+        const field = msg.part === 'detail' ? 'detail' : 'answer';
+        turn[field] = (turn[field] || '') + (msg.text || '');
         if (msg.reqId === session.activeId) schedulePaint();
         break;
+      }
 
       case 'done': {
         turn.status = 'done';
         turn.answer = msg.answer || turn.answer;
+        // 只接受字符串：字段缺失时保留流式期间累积的内容，不能把它清空
+        if (typeof msg.detail === 'string') turn.detail = msg.detail;
         turn.saved = !!msg.saved;
         turn.recordId = msg.recordId || null;
         turn.model = msg.model || turn.model;
@@ -1422,11 +1545,23 @@
     }
   }
 
+  /**
+   * 完整答案 = 结论层 + 展开层。
+   * 复制、手动存档、多轮上下文一律走这里 —— 折叠只是显示状态，
+   * 用户「没点开」不等于「不想要那部分内容」。
+   */
+  function turnFullAnswer(turn) {
+    const brief = turn.answer || '';
+    const detail = turn.detail || '';
+    if (!detail) return brief;
+    return `${brief}\n\n${detail}`;
+  }
+
   function turnAsMarkdown(turn) {
     const parts = [];
     if (turn.selection) parts.push(`> ${turn.selection.replace(/\n/g, '\n> ')}`);
     if (turn.question) parts.push(`**问：** ${turn.question}`);
-    parts.push('', turn.answer || '');
+    parts.push('', turnFullAnswer(turn));
     return parts.join('\n');
   }
 
@@ -1468,6 +1603,7 @@
             mode: turn.mode,
             question: turn.question,
             answer: turn.answer,
+            detail: turn.detail,
             model: turn.model,
           },
         });
@@ -1577,6 +1713,9 @@
         case 'send':
           sendFollowUp();
           break;
+        case 'toggle-detail':
+          toggleDetail(btn.dataset.id);
+          break;
         case 'copy-turn':
           copyTurn(btn.dataset.id);
           break;
@@ -1661,8 +1800,60 @@
     }, 0);
   }
 
+  /* ---------- 零动作触发：双击选词即问 ---------- */
+
+  /**
+   * 双击选词后直接提问，不经过气泡。
+   *
+   * 为什么双击值得单独做：浏览器双击本身就选中了单词，此时再让用户把鼠标移到气泡上
+   * 点一下，等于每次提问都白付一次定位动作。双击是「零动作」路径，气泡保留给
+   * 「想自己挑动作」和「选中一整段」的场景。
+   */
+  function quickAsk() {
+    const info = currentSelectionInfo();
+    if (!info) return;
+    lastSelectionText = info.text;
+    pendingSelection = info;
+
+    // 正在等回答时不打断当前这轮，退回气泡让用户自己决定
+    if (session?.turns.some((t) => t.status === 'pending')) {
+      showPopover(info);
+      return;
+    }
+
+    startTurn({
+      mode: settings.quickAskMode || 'explain',
+      selection: info.text,
+      context: info.context,
+    });
+  }
+
+  /**
+   * 双击之后先停一拍再提问。
+   *
+   * 三击也会经过「第二次 mouseup」，但那时用户的意图是「选中一整段」，
+   * 不该拿单个词去提问。等这一小会儿，让第三次 mousedown 有机会把 pointerDetail 改成 3。
+   */
+  const QUICK_ASK_SETTLE_MS = 180;
+
+  function scheduleQuickAsk() {
+    if (quickAskTimer) clearTimeout(quickAskTimer);
+    quickAskTimer = setTimeout(() => {
+      quickAskTimer = null;
+      if (pointerDetail !== 2) return; // 又点了一下，交给常规流程
+      quickAsk();
+    }, QUICK_ASK_SETTLE_MS);
+  }
+
   function onMouseUp(e) {
     if (fromOurUI(e)) return;
+    const detail = pointerDetail || e.detail || 1;
+
+    // 双击选词 → 直接提问（气泡完全不出现）
+    if (detail === 2 && settings.dblclickAsk && !isDisabledHere()) {
+      scheduleQuickAsk();
+      return;
+    }
     interceptSelection(settings.trigger === 'auto');
   }
 
@@ -1673,6 +1864,9 @@
   }
 
   function onDocMouseDown(e) {
+    // 连击序号必须在任何提前 return 之前记下来 —— 鼠标抬起时要靠它区分双击和三击
+    pointerDetail = e.detail || 1;
+
     if (!els || els.pop.hidden) return;
     // 只有「点在气泡自己身上」才留着它；点页面别处、点面板，都收起来。
     // 面板是持久 UI，气泡是临时 UI —— 但绝不能因为页面上的 mousedown 把气泡

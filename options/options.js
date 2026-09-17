@@ -89,17 +89,21 @@ function fillPresetOptions() {
 
 function fillModeOptions() {
   const sel = $('#defaultMode');
+  const quick = $('#quickAskMode');
   sel.innerHTML = '';
+  quick.innerHTML = '';
   const checks = $('#modeChecks');
   checks.innerHTML = '';
 
   for (const [key, def] of Object.entries(MODES)) {
-    if (key === 'ask') continue; // 追问不是默认动作
+    if (key === 'ask') continue; // 追问要先有用户的问题，不能当默认动作或双击动作
 
-    const opt = document.createElement('option');
-    opt.value = key;
-    opt.textContent = def.label;
-    sel.appendChild(opt);
+    for (const target of [sel, quick]) {
+      const opt = document.createElement('option');
+      opt.value = key;
+      opt.textContent = def.label;
+      target.appendChild(opt);
+    }
 
     const label = document.createElement('label');
     label.innerHTML = `<input type="checkbox" value="${key}"><span>${escapeHtml(def.label)}</span>`;
@@ -123,6 +127,9 @@ function readForm() {
     temperature: Number($('#temperature').value),
     trigger: ($$('#triggerRadios input:checked')[0] || {}).value || 'chip',
     defaultMode: $('#defaultMode').value || 'explain',
+    dblclickAsk: $('#dblclickAsk').checked,
+    quickAskMode: $('#quickAskMode').value || 'explain',
+    layered: $('#layered').checked,
     selectedModes: modes,
     autoSave: $('#autoSave').checked,
     maxHistory: Number($('#maxHistory').value),
@@ -148,6 +155,10 @@ function fillForm(s) {
   });
 
   $('#defaultMode').value = currentSettings.defaultMode || 'explain';
+
+  $('#dblclickAsk').checked = currentSettings.dblclickAsk !== false;
+  $('#quickAskMode').value = currentSettings.quickAskMode || 'explain';
+  $('#layered').checked = currentSettings.layered !== false;
 
   const enabled = new Set(currentSettings.selectedModes || DEFAULT_SETTINGS.selectedModes);
   $$('#modeChecks input').forEach((i) => {
@@ -266,6 +277,9 @@ function bindForm() {
     r.addEventListener('change', () => persistQuiet({ trigger: r.value }));
   });
   $('#defaultMode').addEventListener('change', (e) => persistQuiet({ defaultMode: e.target.value }));
+  $('#dblclickAsk').addEventListener('change', (e) => persistQuiet({ dblclickAsk: e.target.checked }));
+  $('#quickAskMode').addEventListener('change', (e) => persistQuiet({ quickAskMode: e.target.value }));
+  $('#layered').addEventListener('change', (e) => persistQuiet({ layered: e.target.checked }));
   $('#autoSave').addEventListener('change', (e) => persistQuiet({ autoSave: e.target.checked }));
   $('#maxHistory').addEventListener('change', (e) => persistQuiet({ maxHistory: Number(e.target.value) }));
   $('#modeChecks').addEventListener('change', () => {

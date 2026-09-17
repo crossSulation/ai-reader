@@ -119,15 +119,26 @@ timeline.innerHTML = \`
   </div>
   <div class="msg msg-ai">
     <div class="msg-body">
-      <p><strong>ETag 是服务端给资源算的一枚指纹</strong>，用于回答「这份内容还是上次那份吗」。</p>
-      <p>问题出在指纹的算法：如果每台机器按自己的元数据生成，同一份内容在不同节点会得到不同指纹。</p>
+      <p><strong>ETag 是服务端给资源算的一枚指纹</strong>，用来回答「这份内容还是上次那份吗」。</p>
       <ul>
-        <li><strong>抖动</strong>：内容没变却判为变了，304 失效，白白回源</li>
-        <li><strong>失效</strong>：只按文件大小取指纹，改动等长内容时检测不到</li>
-        <li><strong>开销</strong>：大文件全量哈希，CPU 成本高</li>
+        <li>指纹必须跨节点稳定复现，否则 304 会失效</li>
+        <li>动态资源通常改用 <code>Last-Modified</code> 或 <code>Cache-Control: no-cache</code></li>
       </ul>
-      <p>常见做法是：静态资源用「内容哈希 + 版本号」，动态资源改用 <code>Last-Modified</code>，或直接 <code>Cache-Control: no-cache</code> 交给业务判断。</p>
-      <blockquote>一句话记住：ETag 要能跨节点稳定复现，否则它只是个添乱的随机数。</blockquote>
+      <div class="more">
+        <button class="more-btn" aria-expanded="false">
+          <span class="more-caret"></span><span>展开细节</span><span class="more-hint">286 字</span>
+        </button>
+        <div class="more-body" hidden>
+          <p>问题出在指纹的算法：如果每台机器按自己的元数据生成，同一份内容在不同节点会得到不同指纹。</p>
+          <ul>
+            <li><strong>抖动</strong>：内容没变却判为变了，304 失效，白白回源</li>
+            <li><strong>失效</strong>：只按文件大小取指纹，改动等长内容时检测不到</li>
+            <li><strong>开销</strong>：大文件全量哈希，CPU 成本高</li>
+          </ul>
+          <p>常见做法是：静态资源用「内容哈希 + 版本号」，动态资源改用 <code>Last-Modified</code>，或直接 <code>Cache-Control: no-cache</code> 交给业务判断。</p>
+          <blockquote>一句话记住：ETag 要能跨节点稳定复现，否则它只是个添乱的随机数。</blockquote>
+        </div>
+      </div>
     </div>
     <div class="msg-actions">
       <button class="mini-btn">复制</button>
@@ -139,6 +150,16 @@ timeline.innerHTML = \`
 document.querySelector('.panel-sub').textContent = 'HTTP 缓存的四种失效策略';
 document.querySelector('.status').textContent = 'deepseek-chat · 1.8s · 已存档';
 document.querySelector('.msg-ai').classList.add('pinned');
+
+// 折叠区在预览里也要能动，方便直接看展开前后的排版
+for (const btn of document.querySelectorAll('.more-btn')) {
+  btn.addEventListener('click', () => {
+    const open = btn.getAttribute('aria-expanded') === 'true';
+    btn.setAttribute('aria-expanded', open ? 'false' : 'true');
+    btn.parentElement.querySelector('.more-body').hidden = open;
+    btn.querySelector('span:nth-child(2)').textContent = open ? '展开细节' : '收起细节';
+  });
+}
 </script>
 
 </body>

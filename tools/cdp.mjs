@@ -119,6 +119,30 @@ export class CDP {
     await this.mouse('mouseReleased', to.x, to.y, { buttons: 0 });
   }
 
+  /** 真实双击。clickCount 必须是递增的 1、2 —— 浏览器据此把第二次的
+   *  mousedown / mouseup / click 的 detail 置为 2，而 content script 正是靠
+   *  detail 区分「双击选词」和「三击选段」，clickCount 恒为 1 是测不出来的。 */
+  async doubleClickAt(x, y) {
+    await this.mouse('mouseMoved', x, y, { button: 'none', buttons: 0 });
+    for (let i = 1; i <= 2; i++) {
+      await this.mouse('mousePressed', x, y, { buttons: 1, clickCount: i });
+      await sleep(20);
+      await this.mouse('mouseReleased', x, y, { buttons: 0, clickCount: i });
+      await sleep(20);
+    }
+  }
+
+  /** 真实三击（浏览器会选中整个段落） */
+  async tripleClickAt(x, y) {
+    await this.mouse('mouseMoved', x, y, { button: 'none', buttons: 0 });
+    for (let i = 1; i <= 3; i++) {
+      await this.mouse('mousePressed', x, y, { buttons: 1, clickCount: i });
+      await sleep(20);
+      await this.mouse('mouseReleased', x, y, { buttons: 0, clickCount: i });
+      await sleep(20);
+    }
+  }
+
   /** 导航并等页面加载完（轮询 readyState，比监听事件更省事） */
   async navigate(url) {
     await this.send('Page.navigate', { url });

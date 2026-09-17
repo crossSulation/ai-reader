@@ -9,7 +9,7 @@
  */
 
 import { streamChat, chatOnce } from '../lib/llm.js';
-import { buildMessages, buildPingMessages } from '../lib/prompts.js';
+import { buildMessages, buildPingMessages, createLayerSplitter } from '../lib/prompts.js';
 import {
   getSettings,
   saveSettings,
@@ -83,24 +83,40 @@ chrome.commands.onCommand.addListener(async (command) => {
 /* 流式问答通道                                                        */
 /* ------------------------------------------------------------------ */
 
-/** 把 token 级的高频增量合并成 25ms 一批，避免刷屏式 IPC */
+/**
+ * 把 token 级的高频增量合并成 25ms 一批，避免刷屏式 IPC。
+ *
+ * 结论层与展开层各有一个缓冲区，且**永远先发结论层**：
+ * 两段在同一批里同时存在时（标记恰好落在这一批的边界上），
+ * 先发 brief 才能保证 content script 收到的是正确的先后顺序。
+ */
 function createBatcher(flushFn, interval = 25) {
-  let buffer = '';
+  let brief = '';
+  let detail = '';
   let timer = null;
+
   const flush = () => {
     if (timer) {
       clearTimeout(timer);
       timer = null;
     }
-    if (buffer) {
-      const text = buffer;
-      buffer = '';
-      flushFn(text);
+    if (brief) {
+      const text = brief;
+      brief = '';
+      flushFn(text, 'brief');
+    }
+    if (detail) {
+      const text = detail;
+      detail = '';
+      flushFn(text, 'detail');
     }
   };
+
   return {
-    push(text) {
-      buffer += text;
+    push(text, part = 'brief') {
+      if (!text) return;
+      if (part === 'detail') detail += text;
+      else brief += text;
       if (!timer) timer = setTimeout(flush, interval);
     },
     flush,
@@ -163,6 +179,7 @@ chrome.runtime.onConnect.addListener((port) => {
     }
 
     const payload = msg.payload || {};
+    const layered = settings.layered !== false;
     let messages;
     try {
       messages = buildMessages({
@@ -172,6 +189,7 @@ chrome.runtime.onConnect.addListener((port) => {
         page: payload.page,
         question: payload.question,
         history: payload.history,
+        layered,
       });
     } catch (err) {
       safePost(port, { type: 'error', reqId, message: `组装请求失败：${err?.message || err}` });
@@ -180,7 +198,12 @@ chrome.runtime.onConnect.addListener((port) => {
 
     safePost(port, { type: 'start', reqId, model: settings.model });
     const startedAt = Date.now();
-    const batcher = createBatcher((text) => safePost(port, { type: 'delta', reqId, text }));
+    const batcher = createBatcher((text, part) => safePost(port, { type: 'delta', reqId, text, part }));
+
+    // 分层解析放在这里而不是 content script：
+    // 这里是唯一能 import lib/prompts.js 的地方（content script 不是 ESM 环境），
+    // 标记格式因此只有一份定义，不存在两边不同步的风险。
+    const splitter = layered ? createLayerSplitter((text, part) => batcher.push(text, part)) : null;
 
     try {
       const answer = await streamChat({
@@ -191,12 +214,23 @@ chrome.runtime.onConnect.addListener((port) => {
         temperature: settings.temperature,
         messages,
         onController: (ac) => pending.set(reqId, ac),
-        onDelta: (text) => batcher.push(text),
+        onDelta: (text) => (splitter ? splitter.push(text) : batcher.push(text, 'brief')),
       });
+
+      // 注意顺序：finish() 会吐出被 hold 住的尾巴，必须先落定再 flush，否则最后一段丢掉
+      const layers = splitter ? splitter.finish() : { brief: '', detail: '', hasDetail: false };
       batcher.flush();
       pending.delete(reqId);
 
-      const clean = String(answer || '').trim();
+      let clean = layers.brief;
+      let detail = layers.detail;
+      // 模型一个字没写结论层时，把展开层提上来当答案 —— 宁可退化成单层，也不能显示空
+      if (!clean && detail) {
+        clean = detail;
+        detail = '';
+      }
+      if (!clean) clean = String(answer || '').trim();
+
       if (!clean) {
         safePost(port, {
           type: 'error',
@@ -221,6 +255,7 @@ chrome.runtime.onConnect.addListener((port) => {
         mode: payload.mode || 'explain',
         question: payload.question || '',
         answer: clean,
+        detail,
         model: settings.model,
       };
 
@@ -239,6 +274,7 @@ chrome.runtime.onConnect.addListener((port) => {
         type: 'done',
         reqId,
         answer: clean,
+        detail,
         saved,
         recordId: record.id,
         elapsed: Date.now() - startedAt,

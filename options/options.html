@@ -113,7 +113,7 @@
             <input type="radio" name="trigger" value="off">
             <span class="radio-body">
               <b>只响应快捷键 / 右键</b>
-              <i>最安静：完全不自动弹出，用 <kbd>Alt</kbd>+<kbd>Shift</kbd>+<kbd>E</kbd> 或右键菜单触发。</i>
+              <i>最安静：划词后完全不会自动弹出，用 <kbd>Alt</kbd>+<kbd>Shift</kbd>+<kbd>E</kbd> 或右键菜单触发。（双击即问由下面单独的开关控制，不受这里影响。）</i>
             </span>
           </label>
         </div>
@@ -129,6 +129,29 @@
         <div class="checks" id="modeChecks"></div>
         <p class="hint">回答统一在右侧对话面板里展开：全高显示、消息按轮次累积、可继续追问。面板宽度拖左侧边缘即可调整，会自动记住。</p>
       </div>
+
+      <label class="switch-row">
+        <input type="checkbox" id="dblclickAsk">
+        <span class="switch"></span>
+        <span class="switch-text">
+          <b>双击选词直接提问</b>
+          <i>双击一个单词后立刻开始回答，连气泡都不用点。三击选中整段时仍会先给气泡，让你自己挑动作。</i>
+        </span>
+      </label>
+
+      <div class="row">
+        <label for="quickAskMode">双击时用的动作</label>
+        <select id="quickAskMode"></select>
+      </div>
+
+      <label class="switch-row">
+        <input type="checkbox" id="layered">
+        <span class="switch"></span>
+        <span class="switch-text">
+          <b>分层回答：先给结论，细节折叠</b>
+          <i>第一屏只放最关键的信息，想看细节再点「展开细节」。关掉后仍是一次性给出完整回答。</i>
+        </span>
+      </label>
     </div>
 
     <div class="card">

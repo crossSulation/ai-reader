@@ -31,16 +31,28 @@ for (const type of ['mousedown', 'mouseup', 'click']) {
   document.addEventListener(type, (e) => probe(type, e), true);
 }
 
-/* chrome.* 桩：content script 需要的三个能力 */
+/* chrome.* 桩：content script 需要的几个能力。
+   设置可以用查询参数覆盖，方便一个页面覆盖多种交互配置：
+     ?trigger=off&dblclick=0&layered=0 */
+const qs = new URLSearchParams(location.search);
 window.__settings = {
-  trigger: 'chip',
+  trigger: qs.get('trigger') || 'chip',
   defaultMode: 'explain',
   selectedModes: ['explain', 'translate', 'example', 'deeper', 'summarize', 'ask'],
   autoSave: true,
   panelWidth: 400,
   disabledDomains: [],
+  dblclickAsk: qs.get('dblclick') !== '0',
+  quickAskMode: qs.get('quickask') || 'explain',
+  layered: qs.get('layered') !== '0',
 };
-window.__port = { posted: [], disconnect() {} };
+
+window.__port = { posted: [], onMessage: null, onDisconnect: null, disconnect() {} };
+/* 把后台的流式消息灌回 content script —— service worker 负责解析分层标记，
+   下发的 delta 已经带上 part，所以这里也按 part 分开发。 */
+window.__emit = (msg) => {
+  if (window.__port.onMessage) window.__port.onMessage(msg);
+};
 window.chrome = {
   storage: {
     local: {
@@ -53,8 +65,8 @@ window.chrome = {
     connect() {
       return {
         postMessage: (m) => window.__port.posted.push(m),
-        onMessage: { addListener() {} },
-        onDisconnect: { addListener() {} },
+        onMessage: { addListener(fn) { window.__port.onMessage = fn; } },
+        onDisconnect: { addListener(fn) { window.__port.onDisconnect = fn; } },
       };
     },
     sendMessage: (m) => window.__log.push(`runtime.sendMessage ${JSON.stringify(m)}`),

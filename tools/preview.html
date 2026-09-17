@@ -280,6 +280,48 @@
   font-size: 12px; line-height: 1.62; white-space: pre;
 }
 
+/* ---------- 分层回答：展开层折叠区 ---------- */
+
+.more { margin-top: 10px; }
+
+.more-btn {
+  all: unset;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 5px 10px 5px 8px;
+  border-radius: 8px;
+  font-size: 12px;
+  color: #4f46e5;
+  background: rgba(79, 70, 229, 0.07);
+  cursor: pointer;
+  transition: background 0.12s;
+}
+.more-btn:hover { background: rgba(79, 70, 229, 0.14); }
+
+.more-caret {
+  width: 0; height: 0;
+  border-left: 5px solid currentColor;
+  border-top: 4px solid transparent;
+  border-bottom: 4px solid transparent;
+  transition: transform 0.15s;
+}
+.more-btn[aria-expanded="true"] .more-caret { transform: rotate(90deg); }
+
+.more-hint { color: #9aa1ac; font-size: 11px; }
+
+.more-body {
+  margin-top: 10px;
+  padding-left: 11px;
+  border-left: 2px solid rgba(79, 70, 229, 0.18);
+  animation: moreIn 0.16s ease-out;
+}
+
+@keyframes moreIn {
+  from { opacity: 0; transform: translateY(-3px); }
+  to { opacity: 1; transform: none; }
+}
+
 .msg-actions {
   display: flex;
   gap: 3px;
@@ -517,6 +559,10 @@
   .mini-btn { color: #8b93a1; }
   .mini-btn:hover { background: rgba(255, 255, 255, 0.08); color: #cbd5e1; }
   .mini-btn.on { color: #fbbf24; }
+  .more-btn { color: #a5b4fc; background: rgba(129, 140, 248, 0.12); }
+  .more-btn:hover { background: rgba(129, 140, 248, 0.2); }
+  .more-hint { color: #6f7784; }
+  .more-body { border-left-color: rgba(129, 140, 248, 0.28); }
   .panel-composer, .panel-foot { background: #191c20; border-top-color: rgba(255, 255, 255, 0.07); }
   .input { background: #262a30; border-color: rgba(255, 255, 255, 0.12); color: #e3e5e8; }
   .input::placeholder { color: #6b7280; }
@@ -529,7 +575,7 @@
 }
 
 @media (prefers-reduced-motion: reduce) {
-  .pop, .panel, .caret, .skeleton i { animation: none !important; }
+  .pop, .panel, .caret, .skeleton i, .more-body { animation: none !important; }
 }
 </style>
 </head>
@@ -607,15 +653,26 @@ timeline.innerHTML = `
   </div>
   <div class="msg msg-ai">
     <div class="msg-body">
-      <p><strong>ETag 是服务端给资源算的一枚指纹</strong>，用于回答「这份内容还是上次那份吗」。</p>
-      <p>问题出在指纹的算法：如果每台机器按自己的元数据生成，同一份内容在不同节点会得到不同指纹。</p>
+      <p><strong>ETag 是服务端给资源算的一枚指纹</strong>，用来回答「这份内容还是上次那份吗」。</p>
       <ul>
-        <li><strong>抖动</strong>：内容没变却判为变了，304 失效，白白回源</li>
-        <li><strong>失效</strong>：只按文件大小取指纹，改动等长内容时检测不到</li>
-        <li><strong>开销</strong>：大文件全量哈希，CPU 成本高</li>
+        <li>指纹必须跨节点稳定复现，否则 304 会失效</li>
+        <li>动态资源通常改用 <code>Last-Modified</code> 或 <code>Cache-Control: no-cache</code></li>
       </ul>
-      <p>常见做法是：静态资源用「内容哈希 + 版本号」，动态资源改用 <code>Last-Modified</code>，或直接 <code>Cache-Control: no-cache</code> 交给业务判断。</p>
-      <blockquote>一句话记住：ETag 要能跨节点稳定复现，否则它只是个添乱的随机数。</blockquote>
+      <div class="more">
+        <button class="more-btn" aria-expanded="false">
+          <span class="more-caret"></span><span>展开细节</span><span class="more-hint">286 字</span>
+        </button>
+        <div class="more-body" hidden>
+          <p>问题出在指纹的算法：如果每台机器按自己的元数据生成，同一份内容在不同节点会得到不同指纹。</p>
+          <ul>
+            <li><strong>抖动</strong>：内容没变却判为变了，304 失效，白白回源</li>
+            <li><strong>失效</strong>：只按文件大小取指纹，改动等长内容时检测不到</li>
+            <li><strong>开销</strong>：大文件全量哈希，CPU 成本高</li>
+          </ul>
+          <p>常见做法是：静态资源用「内容哈希 + 版本号」，动态资源改用 <code>Last-Modified</code>，或直接 <code>Cache-Control: no-cache</code> 交给业务判断。</p>
+          <blockquote>一句话记住：ETag 要能跨节点稳定复现，否则它只是个添乱的随机数。</blockquote>
+        </div>
+      </div>
     </div>
     <div class="msg-actions">
       <button class="mini-btn">复制</button>
@@ -627,6 +684,16 @@ timeline.innerHTML = `
 document.querySelector('.panel-sub').textContent = 'HTTP 缓存的四种失效策略';
 document.querySelector('.status').textContent = 'deepseek-chat · 1.8s · 已存档';
 document.querySelector('.msg-ai').classList.add('pinned');
+
+// 折叠区在预览里也要能动，方便直接看展开前后的排版
+for (const btn of document.querySelectorAll('.more-btn')) {
+  btn.addEventListener('click', () => {
+    const open = btn.getAttribute('aria-expanded') === 'true';
+    btn.setAttribute('aria-expanded', open ? 'false' : 'true');
+    btn.parentElement.querySelector('.more-body').hidden = open;
+    btn.querySelector('span:nth-child(2)').textContent = open ? '展开细节' : '收起细节';
+  });
+}
 </script>
 
 </body>
