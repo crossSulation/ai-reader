@@ -1,0 +1,67 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>ai-reader 端到端测试页</title>
+<style>
+  body { margin: 0; padding: 40px 32px; font: 16px/1.9 -apple-system, "Segoe UI", "Microsoft YaHei", sans-serif; color: #1f2937; background: #fff; }
+  #para { max-width: 620px; }
+  #probe { margin-top: 28px; padding: 10px 12px; background: #f6f7f9; border-radius: 8px;
+           font: 12px/1.7 ui-monospace, Consolas, monospace; color: #374151; white-space: pre-wrap; }
+</style>
+</head>
+<body>
+<p id="para">注意力机制让模型在处理序列时，能够动态地为不同位置分配权重。这一机制最早由机器翻译任务提出，后来成为几乎所有大语言模型的基础组件。理解它的关键，在于理解查询与键之间的相似度计算。</p>
+<pre id="probe"></pre>
+
+<script>
+/* 事件探针：记录真实鼠标事件最终落在哪个元素上，以及是否命中扩展的宿主元素。
+   注意：文档层拿到的 e.target 会被 retarget 成宿主 <arc-reader-ui>，
+   要看 shadow 内部真正被打中的元素，必须用 composedPath()[0]。 */
+window.__log = [];
+function probe(type, e) {
+  const p = e.composedPath ? e.composedPath() : [];
+  const inHost = p.some((n) => n && n.tagName === 'ARC-READER-UI');
+  const hit = p[0] || e.target;
+  const desc = hit.id ? `#${hit.id}` : (hit.className ? `.${String(hit.className).split(' ')[0]}` : hit.tagName);
+  window.__log.push(`${type} -> ${desc}${inHost ? ' (inHost)' : ''}`);
+  document.getElementById('probe').textContent = window.__log.join('\n');
+}
+for (const type of ['mousedown', 'mouseup', 'click']) {
+  document.addEventListener(type, (e) => probe(type, e), true);
+}
+
+/* chrome.* 桩：content script 需要的三个能力 */
+window.__settings = {
+  trigger: 'chip',
+  defaultMode: 'explain',
+  selectedModes: ['explain', 'translate', 'example', 'deeper', 'summarize', 'ask'],
+  autoSave: true,
+  panelWidth: 400,
+  disabledDomains: [],
+};
+window.__port = { posted: [], disconnect() {} };
+window.chrome = {
+  storage: {
+    local: {
+      get: () => Promise.resolve({ arc_settings: window.__settings }),
+      set: () => Promise.resolve(),
+    },
+    onChanged: { addListener() {} },
+  },
+  runtime: {
+    connect() {
+      return {
+        postMessage: (m) => window.__port.posted.push(m),
+        onMessage: { addListener() {} },
+        onDisconnect: { addListener() {} },
+      };
+    },
+    sendMessage: (m) => window.__log.push(`runtime.sendMessage ${JSON.stringify(m)}`),
+    onMessage: { addListener(fn) { window.__runtimeListener = fn; } },
+  },
+};
+</script>
+<script src="../content/content.js"></script>
+</body>
+</html>

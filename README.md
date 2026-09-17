@@ -90,17 +90,41 @@ ai-reader/
 └── tools/
     ├── make_icons.py        # 图标生成（纯标准库手写 PNG）
     ├── make_preview.mjs     # 从真实源码抽取 CSS/DOM 生成静态预览页
-    └── selftest.mjs         # 自测：直接加载真实源码跑 26 项断言
+    ├── selftest.mjs         # 静态自测：直接加载真实源码跑 29 项断言
+    ├── harness.html         # 端到端测试页（桩掉 chrome.* API，加载真实 content.js）
+    └── e2e.mjs              # 端到端回归：真实 Chrome + 真实鼠标事件
 ```
 
-运行自测（Node ≥ 18）：
+### 两道测试，各管一段
 
 ```bash
-node tools/selftest.mjs
+node tools/selftest.mjs   # 快，不需要浏览器：逻辑、安全、结构一致性
+node tools/e2e.mjs        # 慢，需要本机 Chrome：真实交互链路
 ```
 
-覆盖：Markdown 渲染器 XSS 防护、各种 Base URL 的端点补全、提示词防注入与截断、记录 id 稳定性、导出格式，
-以及 UI 结构一致性（模板里的 class 是否都有样式、每个 `data-act` 是否都有处理分支、气泡定位是否避让面板）。
+**selftest.mjs** 覆盖：Markdown 渲染器 XSS 防护、各种 Base URL 的端点补全、提示词防注入与截断、
+记录 id 稳定性、导出格式；以及 UI 结构一致性 —— 模板里的 class 是否都有样式、每个 `data-act`
+是否都有处理分支、气泡定位是否避让面板、事件守卫是否用对了 API。
+
+**e2e.mjs** 用 CDP 派发**真实的鼠标按下 / 移动 / 抬起**（不是 `el.click()` 那种合成事件），
+走完「拖选正文 → 气泡浮出 → 点动作 → 右侧面板弹出 → 请求发往后台 → 重新划选」全链路，
+并断言 `click` 最终落在哪个元素上。
+
+> 为什么两道都要：静态检查和合成事件都发现不了「在 `mousedown` 里把自己 `display:none` 掉，
+> 于是按钮永远收不到 `click`」这类问题（v1.1.1 修的就是它）。只有真实输入能暴露。
+>
+> 有头模式跑（便于肉眼观察）：`HEADED=1 node tools/e2e.mjs`；
+> Chrome 不在默认位置时：`CHROME_PATH=/path/to/chrome node tools/e2e.mjs`。
+
+## 更新记录
+
+- **1.1.1** 修复：点气泡上的动作按钮后，右侧面板不弹出。成因是 UI 归属判断误用了
+  `Element.composedPath`（那是 `Event` 的方法，恒为 `undefined`），于是连点自家气泡也被当成
+  「点了页面别处」，气泡在 `mousedown` 阶段就被隐藏，`click` 因此被派发给 `<html>`，
+  按钮的处理器永远不执行。同一处修复也让「同一段文字重新划选」能再次浮出气泡。
+  新增端到端回归测试与两条静态守卫。
+- **1.1.0** 交互改版：气泡降级为纯触发器，答案迁到右侧可调宽对话面板。
+- **1.0.0** 首个版本。
 
 ## 许可
 

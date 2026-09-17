@@ -307,6 +307,51 @@ test('流式增量走单条消息重绘，而不是整棵时间线重建', () =>
 });
 
 /* ------------------------------------------------------------------ */
+/* 事件守卫回归：给「点气泡上的按钮没反应」那个 bug 上的锁               */
+/* ------------------------------------------------------------------ */
+
+/** 去掉注释再检查，避免文档里提到 API 名字就被误判 */
+const stripComments = (s) =>
+  s.replace(/\/\*[\s\S]*?\*\//g, '').replace(/(^|[^:])\/\/.*$/gm, '$1');
+
+test('composedPath 只能调用在事件对象上（Element / Node 上没有这个方法）', () => {
+  const src = stripComments(contentSrc);
+  const bad = [...src.matchAll(/([A-Za-z_$][\w$]*)\.composedPath/g)]
+    .map((m) => m[1])
+    .filter((name) => !['e', 'ev', 'event'].includes(name));
+  assert.deepEqual(
+    bad,
+    [],
+    `这些调用者不是事件对象，守卫会恒为 false，UI 事件会被误判成页面事件：${[...new Set(bad)].join(', ')}`
+  );
+});
+
+test('三个全局监听都做了「事件是否来自自己 UI」的判断', () => {
+  assert.ok(contentSrc.includes('function eventPathHas'), '缺少基于事件链的守卫函数');
+  assert.ok(contentSrc.includes('function fromOurUI'), '缺少 fromOurUI 判定');
+  for (const fn of ['onMouseUp', 'onKeyUp', 'onDocMouseDown']) {
+    const at = contentSrc.indexOf(`function ${fn}(`);
+    assert.ok(at > 0, `${fn} 不存在`);
+    const body = contentSrc.slice(at, at + 500);
+    assert.ok(
+      body.includes('fromOurUI(e)') || body.includes('eventPathHas(e'),
+      `${fn} 没判断事件归属：我们 UI 里的鼠标事件会被当成页面上的操作`
+    );
+  }
+});
+
+test('隐藏气泡前必须先判断事件是否来自气泡自己', () => {
+  // 在 mousedown 里把气泡 display:none 掉，Chrome 就会把之后的 click 派发给 <html>，
+  // 按钮的处理器永远收不到 —— 顺序错了这个 bug 就会回来。
+  const at = contentSrc.indexOf('function onDocMouseDown(');
+  const body = contentSrc.slice(at, contentSrc.indexOf('function onKeyDown('));
+  assert.ok(
+    body.indexOf('eventPathHas(e, els.pop)') < body.indexOf('hidePopover()'),
+    'onDocMouseDown 必须先判断事件归属，再决定是否隐藏气泡'
+  );
+});
+
+/* ------------------------------------------------------------------ */
 
 console.log(`\n结果：${passed} 通过，${failed} 失败`);
 process.exit(failed > 0 ? 1 : 0);

@@ -1509,10 +1509,25 @@
    * 事件绑定
    * ================================================================ */
 
-  function pathHas(node) {
-    if (!host || !node) return false;
-    const path = node.composedPath ? node.composedPath() : [];
-    return path.includes(host);
+  /**
+   * 事件链路上是否包含某个节点（能穿透 Shadow DOM 拿到真实链路）。
+   *
+   * 这里踩过一个坑：`composedPath` 是 **Event** 的方法，Element / Node 上**没有**。
+   * 早期版本写成了 `node.composedPath()`，守卫因此恒为 false —— 于是「点气泡上的按钮」
+   * 被判成「点了页面别处」，在 mousedown 阶段就把气泡 display:none 掉；
+   * 鼠标抬起时按钮已不在指针下，Chrome 会把 click 派发给 <html>，
+   * 按钮的 click 处理器根本不执行（右侧面板于是永远弹不出来）。
+   * 已加自测静态守卫：composedPath 的调用者必须是事件对象。
+   */
+  function eventPathHas(e, node) {
+    if (!e || !node) return false;
+    const path = typeof e.composedPath === 'function' ? e.composedPath() : [];
+    return path.includes(node);
+  }
+
+  /** 事件是否来自我们自己的 UI（气泡 / 面板 / 悬浮球） */
+  function fromOurUI(e) {
+    return eventPathHas(e, host) || inOurUI(e?.target);
   }
 
   function bindUI() {
@@ -1621,7 +1636,14 @@
     setTimeout(() => {
       const info = currentSelectionInfo();
       if (!info) return;
-      if (info.text === lastSelectionText) return;
+
+      // 同一段文字的去重规则：
+      //   气泡还开着 → 不要重复摆一次（位置会闪）
+      //   气泡已收起（选过动作 / 关过面板）→ 必须允许重新浮出，
+      //   否则用户重新划同一段文字会「什么都没发生」
+      //   自动提问模式气泡永远不开，必须硬去重，否则一次双击就重复发问
+      const sameText = info.text === lastSelectionText;
+      if (sameText && (autoMode || (els && !els.pop.hidden))) return;
       lastSelectionText = info.text;
       pendingSelection = info;
 
@@ -1640,20 +1662,23 @@
   }
 
   function onMouseUp(e) {
-    if (pathHas(e.target)) return;
+    if (fromOurUI(e)) return;
     interceptSelection(settings.trigger === 'auto');
   }
 
   function onKeyUp(e) {
-    if (pathHas(e.target)) return;
+    if (fromOurUI(e)) return;
     if (e.key !== 'Shift' && !(e.shiftKey && e.key.startsWith('Arrow'))) return;
     interceptSelection(settings.trigger === 'auto');
   }
 
   function onDocMouseDown(e) {
-    if (pathHas(e.target)) return;
-    // 面板是持久 UI，点页面别处不关闭；气泡是临时 UI，点外面就收起来
-    if (els && !els.pop.hidden) hidePopover();
+    if (!els || els.pop.hidden) return;
+    // 只有「点在气泡自己身上」才留着它；点页面别处、点面板，都收起来。
+    // 面板是持久 UI，气泡是临时 UI —— 但绝不能因为页面上的 mousedown 把气泡
+    // 连同它的按钮一起藏掉（那会让按钮永远收不到 click）。
+    if (eventPathHas(e, els.pop)) return;
+    hidePopover();
   }
 
   function onKeyDown(e) {
