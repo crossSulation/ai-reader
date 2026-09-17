@@ -352,6 +352,92 @@ test('隐藏气泡前必须先判断事件是否来自气泡自己', () => {
 });
 
 /* ------------------------------------------------------------------ */
+/* 页面级守卫：HTML / CSS / JS 三者之间的约定                           */
+/* ------------------------------------------------------------------ */
+
+console.log('\n[6] 扩展页面（popup / options）的 HTML ↔ CSS ↔ JS 一致性');
+
+const PAGES = [
+  { name: 'popup', html: 'popup/popup.html', css: 'popup/popup.css', js: 'popup/popup.js' },
+  { name: 'options', html: 'options/options.html', css: 'options/options.css', js: 'options/options.js' },
+];
+const readPage = (rel) => fs.readFileSync(path.join(root, rel), 'utf8');
+
+/** 找出 HTML 里所有「带 hidden 属性」的元素（属性顺序无关） */
+function hiddenElements(html) {
+  const out = [];
+  for (const m of html.matchAll(/<([a-z][\w-]*)\b([^>]*)>/gi)) {
+    const attrs = m[2];
+    if (!/(^|\s)hidden(\s|\/|$|=(?:"")?)/.test(attrs)) continue;
+    const cls = (attrs.match(/\bclass\s*=\s*"([^"]*)"/) || [])[1] || '';
+    const id = (attrs.match(/\bid\s*=\s*"([^"]*)"/) || [])[1] || '';
+    out.push({ tag: m[1], cls, id });
+  }
+  return out;
+}
+
+/** CSS 里有没有给这个 class 声明 display */
+function classDeclaresDisplay(css, cls) {
+  const name = cls.replace(/[.*+?^${}()|[\]\\-]/g, '\\$&');
+  return new RegExp(`\\.${name}\\s*(?:,[^{]*)?\\{[^}]*\\bdisplay\\s*:`, 'i').test(css);
+}
+
+test('每个页面样式都钉住了 [hidden] 这条不变量', () => {
+  for (const p of PAGES) {
+    const css = readPage(p.css);
+    assert.ok(
+      /\[hidden\]\s*\{[^}]*display\s*:\s*none\s*!important/.test(css),
+      `${p.css} 缺少 \`[hidden] { display: none !important; }\`：` +
+        `hidden 属性只是 UA 样式表里的一条规则，任何 .class { display: ... } 都能盖掉它，` +
+        `元素就会「写着 hidden 却照样显示」`
+    );
+  }
+});
+
+test('带 hidden 属性的元素，其 class 不得在「没有兜底规则」的页面里声明 display', () => {
+  // 判据要说准：`.tip { display: flex }` 本身是正常写法（可见时它就得是 flex）。
+  // 真正会出事的是「class 声明了 display」+「页面没钉住 [hidden]」这个组合 ——
+  // 那时 hidden 属性会被静默盖掉，元素永远显示。这正是「配好 Key 还提示未配置」的成因。
+  const fatal = [];
+  const noteworthy = [];
+  for (const p of PAGES) {
+    const html = readPage(p.html);
+    const css = readPage(p.css);
+    const hasNet = /\[hidden\]\s*\{[^}]*display\s*:\s*none\s*!important/.test(css);
+    for (const el of hiddenElements(html)) {
+      for (const cls of el.cls.split(/\s+/).filter(Boolean)) {
+        if (!classDeclaresDisplay(css, cls)) continue;
+        const desc = `${p.css} 的 .${cls} 声明了 display，而 ${p.html} 的 <${el.tag} id="${el.id}"> 带 hidden`;
+        (hasNet ? noteworthy : fatal).push(desc);
+      }
+    }
+  }
+  if (noteworthy.length) {
+    console.log(`      （已由 [hidden] 兜底规则覆盖，仅供留意：${noteworthy.length} 处）`);
+  }
+  assert.deepEqual(
+    fatal,
+    [],
+    `${fatal.join('\n')}\n      → 必须给该页面 CSS 补上 \`[hidden] { display: none !important; }\``
+  );
+});
+
+test('JS 里引用的元素 id 在对应 HTML 里都存在', () => {
+  const missing = [];
+  for (const p of PAGES) {
+    const html = readPage(p.html);
+    const js = readPage(p.js);
+    const ids = [...js.matchAll(/(?:querySelector|querySelectorAll|\$)\(\s*['"]#([A-Za-z][\w-]*)/g)].map((m) => m[1]);
+    for (const id of new Set(ids)) {
+      if (!new RegExp(`\\bid\\s*=\\s*"${id}"`).test(html)) {
+        missing.push(`${p.js} 引用了 #${id}，但 ${p.html} 里没有这个 id（脚本会在取属性时抛错，整页功能失效）`);
+      }
+    }
+  }
+  assert.deepEqual(missing, [], missing.join('\n'));
+});
+
+/* ------------------------------------------------------------------ */
 
 console.log(`\n结果：${passed} 通过，${failed} 失败`);
 process.exit(failed > 0 ? 1 : 0);

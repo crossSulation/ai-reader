@@ -161,6 +161,41 @@ function fillForm(s) {
   $('#keyHint').textContent = currentSettings.apiKey
     ? '密钥以明文保存在本机扩展存储中。建议单独申请一个低额度 Key 专供本插件使用。'
     : '还没有填密钥。密钥只存在本机，不会同步到其他设备。';
+
+  // 表单已与存储对齐，此刻没有未保存的改动
+  markSaved();
+}
+
+/* ================================================================
+ * 「改动未保存」检测
+ *
+ * 存在的理由：「仅测试」只用表单值发请求、不写存储。用户看到测试通过，
+ * 很自然地以为配置生效了，接着就会发现扩展弹窗说「还没有配置模型」。
+ * 把「未保存」显示出来，这类困惑就不会发生。
+ * ================================================================ */
+
+let savedCore = '';
+
+function coreOfForm() {
+  return JSON.stringify({
+    protocol: $('#protocol').value,
+    baseUrl: $('#baseUrl').value.trim(),
+    apiKey: $('#apiKey').value.trim(),
+    model: $('#model').value.trim(),
+    temperature: Number($('#temperature').value),
+  });
+}
+
+function renderDirty() {
+  const dirty = coreOfForm() !== savedCore;
+  $('#dirtyHint').hidden = !dirty;
+  $('#saveBtn').classList.toggle('dirty', dirty);
+  return dirty;
+}
+
+function markSaved() {
+  savedCore = coreOfForm();
+  renderDirty();
 }
 
 /** 表单值与预设对不上时，把下拉切到「自定义」 */
@@ -185,13 +220,31 @@ function bindForm() {
     $('#protocol').value = p.protocol;
     $('#baseUrl').value = p.baseUrl;
     $('#model').value = p.model;
+    renderDirty();
     if (!currentSettings.apiKey) $('#apiKey').focus();
   });
 
   for (const id of ['#baseUrl', '#model', '#protocol']) {
-    $(id).addEventListener('input', syncPresetFromForm);
-    $(id).addEventListener('change', syncPresetFromForm);
+    $(id).addEventListener('input', () => {
+      syncPresetFromForm();
+      renderDirty();
+    });
+    $(id).addEventListener('change', () => {
+      syncPresetFromForm();
+      renderDirty();
+    });
   }
+
+  // 密钥和随机性也会影响「能否用起来」，同样纳入未保存检测
+  $('#apiKey').addEventListener('input', renderDirty);
+  $('#temperature').addEventListener('input', renderDirty);
+
+  // 填了没保存就关页面，是最容易白费功夫的路径，拦一下
+  window.addEventListener('beforeunload', (e) => {
+    if (coreOfForm() === savedCore) return;
+    e.preventDefault();
+    e.returnValue = '';
+  });
 
   $('#toggleKey').addEventListener('click', () => {
     const input = $('#apiKey');
@@ -311,6 +364,7 @@ async function onSaveAndTest() {
     const saved = await send({ type: 'settings:save', patch });
     if (!saved?.ok) throw new Error(saved?.error || '保存失败');
     currentSettings = saved.settings;
+    markSaved(); // 已落盘，未保存提示随之消失
 
     if (!perm.ok) {
       showResult('err', perm.message);

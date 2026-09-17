@@ -37,6 +37,14 @@
 
 * { box-sizing: border-box; }
 
+/**
+ * 兜底规则，别删。
+ * `hidden` 属性只是 UA 样式表里的一条 `[hidden] { display: none }`，
+ * 优先级低到任何 `.class { display: flex }` 都能盖掉它 —— 元素会「写着 hidden 却照样显示」。
+ * 用 !important 把这条不变量钉住。
+ */
+[hidden] { display: none !important; }
+
 body {
   margin: 0;
   background: var(--bg);
@@ -243,6 +251,20 @@ input[type="range"]::-webkit-slider-thumb:hover { transform: scale(1.14); }
 
 .actions { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin-top: 20px; }
 .action-note { font-size: 11.5px; color: var(--text-3); flex: 1; min-width: 180px; line-height: 1.55; }
+
+/* 未保存提示：填了 Key 却没点保存，是「明明配了却说没配」的常见成因 */
+.dirty-hint {
+  margin-top: 14px;
+  padding: 11px 14px;
+  border-radius: 10px;
+  background: rgba(217, 119, 6, 0.09);
+  border: 1px solid rgba(217, 119, 6, 0.22);
+  color: #b45309;
+  font-size: 12.5px;
+  line-height: 1.65;
+}
+.dirty-hint b { font-weight: 650; }
+.primary-btn.dirty { box-shadow: 0 0 0 3px rgba(217, 119, 6, 0.2); }
 
 /* ---------------- 结果区 ---------------- */
 
@@ -465,6 +487,7 @@ input[type="range"]::-webkit-slider-thumb:hover { transform: scale(1.14); }
 
 @media (prefers-color-scheme: dark) {
   .toast { background: #e3e5e8; color: #16181c; }
+  .dirty-hint { color: #fbbf24; background: rgba(251, 191, 36, 0.1); border-color: rgba(251, 191, 36, 0.24); }
 }
 
 ::-webkit-scrollbar { width: 9px; height: 9px; }

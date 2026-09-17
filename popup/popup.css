@@ -24,6 +24,14 @@
 
 * { box-sizing: border-box; }
 
+/**
+ * 兜底规则，别删。
+ * `hidden` 属性只是 UA 样式表里的一条 `[hidden] { display: none }`，
+ * 优先级低到任何 `.class { display: flex }` 都能盖掉它 —— 元素会「写着 hidden 却照样显示」。
+ * 用 !important 把这条不变量钉住。
+ */
+[hidden] { display: none !important; }
+
 body {
   margin: 0;
   width: 328px;

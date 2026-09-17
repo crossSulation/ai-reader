@@ -13,118 +13,14 @@
  * 依赖：本机已安装 Chrome（不需要 Playwright）。
  */
 
-import { spawn } from 'node:child_process';
-import { existsSync, mkdtempSync, rmSync } from 'node:fs';
-import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
+import { launchChrome, sleep } from './cdp.mjs';
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const HARNESS = pathToFileURL(path.join(HERE, 'harness.html')).href;
 const PORT = Number(process.env.PORT || 9333);
 const HEADED = !!process.env.HEADED;
-
-const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
-
-/* ------------------------------------------------------------------ */
-/* 找 Chrome                                                          */
-/* ------------------------------------------------------------------ */
-
-const CHROME_CANDIDATES = [
-  process.env.CHROME_PATH,
-  'C:/Program Files/Google/Chrome/Application/chrome.exe',
-  'C:/Program Files (x86)/Google/Chrome/Application/chrome.exe',
-  '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome',
-  '/usr/bin/google-chrome',
-  '/usr/bin/chromium',
-].filter(Boolean);
-
-function findChrome() {
-  for (const p of CHROME_CANDIDATES) if (existsSync(p)) return p;
-  return 'chrome'; // 交给 PATH
-}
-
-/* ------------------------------------------------------------------ */
-/* 极简 CDP 客户端                                                     */
-/* ------------------------------------------------------------------ */
-
-class CDP {
-  constructor(ws) {
-    this.ws = ws;
-    this.id = 0;
-    this.pending = new Map();
-    this.probeLogs = [];
-    ws.addEventListener('message', (ev) => {
-      const msg = JSON.parse(ev.data);
-      if (msg.id && this.pending.has(msg.id)) {
-        const { resolve, reject } = this.pending.get(msg.id);
-        this.pending.delete(msg.id);
-        msg.error ? reject(new Error(JSON.stringify(msg.error))) : resolve(msg.result);
-      } else if (msg.method === 'Runtime.consoleAPICalled') {
-        this.probeLogs.push(msg.params.args.map((a) => a.value).join(' '));
-      }
-    });
-  }
-
-  send(method, params = {}) {
-    const id = ++this.id;
-    return new Promise((resolve, reject) => {
-      this.pending.set(id, { resolve, reject });
-      this.ws.send(JSON.stringify({ id, method, params }));
-      setTimeout(() => {
-        if (this.pending.has(id)) {
-          this.pending.delete(id);
-          reject(new Error(`CDP 超时：${method}`));
-        }
-      }, 15000);
-    });
-  }
-
-  async eval(expression) {
-    const r = await this.send('Runtime.evaluate', {
-      expression,
-      returnByValue: true,
-      awaitPromise: true,
-    });
-    if (r.exceptionDetails) {
-      throw new Error(`页面内求值失败：${r.exceptionDetails.exception?.description || r.exceptionDetails.text}`);
-    }
-    return r.result.value;
-  }
-
-  async mouse(type, x, y, extra = {}) {
-    await this.send('Input.dispatchMouseEvent', {
-      type,
-      x: Math.round(x),
-      y: Math.round(y),
-      button: 'left',
-      clickCount: 1,
-      ...extra,
-    });
-  }
-
-  /** 一次真实的按下-抬起（浏览器会自动派发 click） */
-  async clickAt(x, y) {
-    await this.mouse('mouseMoved', x, y, { button: 'none', buttons: 0 });
-    await this.mouse('mousePressed', x, y, { buttons: 1 });
-    await sleep(30);
-    await this.mouse('mouseReleased', x, y, { buttons: 0 });
-  }
-
-  /** 拖选一段文字 */
-  async dragSelect(from, to) {
-    await this.mouse('mouseMoved', from.x, from.y, { button: 'none', buttons: 0 });
-    await this.mouse('mousePressed', from.x, from.y, { buttons: 1 });
-    const steps = 6;
-    for (let i = 1; i <= steps; i++) {
-      await this.mouse('mouseMoved', from.x + ((to.x - from.x) * i) / steps, from.y + ((to.y - from.y) * i) / steps, {
-        buttons: 1,
-      });
-      await sleep(12);
-    }
-    await this.mouse('mouseReleased', to.x, to.y, { buttons: 0 });
-  }
-}
 
 /* ------------------------------------------------------------------ */
 /* 被测 UI 的探针                                                      */
@@ -174,53 +70,12 @@ function check(name, ok, detail = '') {
   }
 }
 
-async function waitPort() {
-  for (let i = 0; i < 60; i++) {
-    try {
-      const res = await fetch(`http://127.0.0.1:${PORT}/json/list`);
-      const list = await res.json();
-      const page = list.find((t) => t.type === 'page' && t.webSocketDebuggerUrl);
-      if (page) return page;
-    } catch {
-      /* 还没起来 */
-    }
-    await sleep(250);
-  }
-  throw new Error('Chrome 调试端口未就绪');
-}
-
 async function main() {
-  const chrome = findChrome();
-  const profile = mkdtempSync(path.join(tmpdir(), 'arc-e2e-'));
-  console.log(`Chrome: ${chrome}`);
+  const { cdp, chromePath, close } = await launchChrome({ port: PORT, headed: HEADED, startUrl: HARNESS });
+  console.log(`Chrome: ${chromePath}`);
   console.log(`测试页: ${HARNESS}\n`);
 
-  const child = spawn(
-    chrome,
-    [
-      HEADED ? '--new-window' : '--headless=new',
-      '--disable-gpu',
-      '--no-first-run',
-      '--no-default-browser-check',
-      '--disable-extensions',
-      '--window-size=1280,900',
-      `--user-data-dir=${profile}`,
-      `--remote-debugging-port=${PORT}`,
-      HARNESS,
-    ],
-    { stdio: ['ignore', 'ignore', 'pipe'] }
-  );
-
-  let cdp;
   try {
-    const page = await waitPort();
-    const ws = new WebSocket(page.webSocketDebuggerUrl);
-    await new Promise((resolve, reject) => {
-      ws.addEventListener('open', resolve, { once: true });
-      ws.addEventListener('error', () => reject(new Error('WebSocket 连接失败')), { once: true });
-    });
-    cdp = new CDP(ws);
-    await cdp.send('Runtime.enable');
     await sleep(400); // 等 content.js bootstrap 完成（storage 是异步的）
 
     console.log('【1】脚本注入与初始状态');
@@ -319,18 +174,7 @@ async function main() {
       '若 click 落在 #para / HTML 上，说明 mousedown 时按钮被隐藏，click 没能派发到它'
     );
   } finally {
-    try {
-      cdp?.ws.close();
-    } catch {
-      /* ignore */
-    }
-    child.kill();
-    await sleep(200);
-    try {
-      rmSync(profile, { recursive: true, force: true });
-    } catch {
-      /* Windows 下偶发占用，忽略 */
-    }
+    await close();
   }
 }
 
