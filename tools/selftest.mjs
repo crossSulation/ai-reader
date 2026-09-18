@@ -16,7 +16,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import { buildEndpoint, originPatternOf } from '../lib/llm.js';
-import { buildMessages, MODES, LAYER_MARKER, splitLayered, createLayerSplitter, TOTAL_CHAR_BUDGET, RECENT_TURNS_FULL, HISTORY_SUMMARY_TITLE } from '../lib/prompts.js';
+import { buildMessages, buildRequest, MODES, LAYER_MARKER, splitLayered, createLayerSplitter, TOTAL_CHAR_BUDGET, RECENT_TURNS_FULL, HISTORY_SUMMARY_TITLE } from '../lib/prompts.js';
 import { recordId, toMarkdown, domainOf } from '../lib/store.js';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
@@ -761,6 +761,123 @@ test('单条历史消息仍受 4000 字上限约束', () => {
   });
   const assistant = msgs.find((m) => m.role === 'assistant');
   assert.ok(assistant.content.length < 4200, `单条长度 ${assistant.content.length} 未被截断`);
+});
+
+/* ------------------------------------------------------------------ */
+/* [9] 预算设置项 / 压缩信息 / 锚点回看                                  */
+/* ------------------------------------------------------------------ */
+
+console.log('\n[9] 预算设置项 · 压缩信息 · 锚点回看');
+
+const swSrc = fs.readFileSync(path.join(root, 'background/service-worker.js'), 'utf8');
+const optionsJs = fs.readFileSync(path.join(root, 'options/options.js'), 'utf8');
+const optionsHtml = fs.readFileSync(path.join(root, 'options/options.html'), 'utf8');
+const storeSrc = fs.readFileSync(path.join(root, 'lib/store.js'), 'utf8');
+
+test('预算可配置：小预算下历史被压得更紧，总量守在小预算内', () => {
+  const small = 8000;
+  const msgs = buildMessages({
+    mode: 'ask',
+    selection: 'ETag',
+    question: '继续',
+    history: makeHistory(60, 2000),
+    budget: small,
+  });
+  assert.ok(
+    msgChars(msgs) <= small,
+    `小预算下总字符 ${msgChars(msgs)} 超过 ${small}`
+  );
+  // 同样的历史，默认预算下不会被压这么狠 —— 说明参数真的生效了
+  const big = buildMessages({
+    mode: 'ask',
+    selection: 'ETag',
+    question: '继续',
+    history: makeHistory(60, 2000),
+  });
+  assert.ok(msgChars(big) > msgChars(msgs), '小预算与默认预算压出的结果一样大，budget 参数没生效');
+});
+
+test('budget 缺省时行为与旧版一致（默认 30000）', () => {
+  const a = buildMessages({ mode: 'ask', selection: 'x', question: 'q', history: makeHistory(20, 4000) });
+  const b = buildMessages({
+    mode: 'ask',
+    selection: 'x',
+    question: 'q',
+    history: makeHistory(20, 4000),
+    budget: TOTAL_CHAR_BUDGET,
+  });
+  assert.deepEqual(a, b, '缺省 budget 与显式默认值应当产出完全相同的消息');
+});
+
+test('buildRequest 返回 contextInfo，计数与消息实际内容对齐', () => {
+  const { messages, contextInfo } = buildRequest({
+    mode: 'ask',
+    selection: 'ETag',
+    question: '继续',
+    history: makeHistory(20, 800),
+  });
+  assert.equal(contextInfo.budget, TOTAL_CHAR_BUDGET);
+  assert.equal(contextInfo.totalTurns, 20);
+  assert.equal(contextInfo.fullTurns, RECENT_TURNS_FULL);
+  assert.ok(contextInfo.summarizedTurns > 0, '长对话应当有轮次进摘要');
+  assert.equal(
+    contextInfo.fullTurns + contextInfo.summarizedTurns + contextInfo.omittedTurns,
+    contextInfo.totalTurns,
+    '三种去向的轮次数加起来必须等于总轮数，面板显示才不会撒谎'
+  );
+  // fullTurns 与消息列表里实际的 assistant 消息数一致
+  assert.equal(
+    messages.filter((m) => m.role === 'assistant').length,
+    contextInfo.fullTurns,
+    '声称完整保留的轮数与实际消息数不符'
+  );
+});
+
+test('没有历史时 contextInfo 全零，不产生摘要', () => {
+  const { contextInfo } = buildRequest({ mode: 'explain', selection: 'x' });
+  assert.equal(contextInfo.totalTurns, 0);
+  assert.equal(contextInfo.fullTurns, 0);
+  assert.equal(contextInfo.summarizedTurns, 0);
+  assert.equal(contextInfo.omittedTurns, 0);
+});
+
+test('设置链路贯通：store 默认值 → SW 读取 → options 有对应控件', () => {
+  assert.ok(storeSrc.includes('contextBudget: 30000'), 'store.js 缺少 contextBudget 默认值');
+  assert.ok(
+    swSrc.includes('budget: settings.contextBudget'),
+    'service worker 没有把设置项作为预算传给 buildRequest'
+  );
+  assert.ok(swSrc.includes('buildRequest'), 'service worker 应改用 buildRequest 才能拿到 contextInfo');
+  assert.ok(optionsHtml.includes('id="contextBudget"'), 'options.html 缺少预算设置控件');
+  assert.ok(optionsJs.includes('contextBudget'), 'options.js 没有读写预算设置');
+});
+
+test('content.js 渲染压缩说明，且只在真的发生压缩时出现', () => {
+  const at = contentSrc.indexOf('function buildContextNote(');
+  assert.ok(at > 0, '缺少 buildContextNote');
+  const body = contentSrc.slice(at, contentSrc.indexOf('function buildAiBlock('));
+  assert.ok(body.includes('turn.contextInfo'), '压缩说明没有从 turn 读取 contextInfo');
+  assert.ok(body.includes('summarizedTurns') && body.includes('omittedTurns'), '说明里缺少轮次计数');
+  // start 消息要把 contextInfo 存到 turn 上
+  const startAt = contentSrc.indexOf("case 'start':");
+  assert.ok(
+    contentSrc.slice(startAt, startAt + 500).includes('msg.contextInfo'),
+    "onPortMessage 的 'start' 分支没有处理 contextInfo"
+  );
+});
+
+test('content.js 捕获划词锚点，且每一处 startTurn 都带上它', () => {
+  assert.ok(
+    contentSrc.includes('anchor: { node: range.startContainer, offset: range.startOffset }'),
+    'currentSelectionInfo 没有捕获锚点'
+  );
+  // 「回看原文」的动作分支必须存在（data-act 守卫之外再钉一次语义）
+  assert.ok(contentSrc.includes("case 'goto-anchor':"), '缺少 goto-anchor 分支');
+  assert.ok(contentSrc.includes('function gotoAnchor('), '缺少 gotoAnchor');
+  // 失效要如实告知，不能做假跳转
+  const at = contentSrc.indexOf('function gotoAnchor(');
+  const body = contentSrc.slice(at, contentSrc.indexOf('function flashAnchorHighlight('));
+  assert.ok(body.includes('document.contains'), 'gotoAnchor 没有校验锚点是否仍连接在文档里');
 });
 
 /* ------------------------------------------------------------------ */

@@ -301,6 +301,9 @@
         height: rect.height,
       },
       context: extractContext(el),
+      // 回看锚点：选区起点的 DOM 位置。存 node+offset 而不是坐标——
+      // 坐标是视口相对的，页面一滚就作废；DOM 节点只要没被页面脚本重建就仍然有效。
+      anchor: { node: range.startContainer, offset: range.startOffset },
     };
   }
 
@@ -543,6 +546,19 @@
 .msg-body pre code {
   background: none; padding: 0; color: #1f2328;
   font-size: 12px; line-height: 1.62; white-space: pre;
+}
+
+/* ---------- 上下文压缩说明 ---------- */
+
+.ctx-note {
+  margin: -9px 0 11px;
+  padding: 4px 10px;
+  border-radius: 8px;
+  background: rgba(15, 23, 42, 0.035);
+  font-size: 11px;
+  line-height: 1.5;
+  color: #8b939f;
+  cursor: default;
 }
 
 /* ---------- 分层回答：展开层折叠区 ---------- */
@@ -828,6 +844,7 @@
   .more-btn:hover { background: rgba(129, 140, 248, 0.2); }
   .more-hint { color: #6f7784; }
   .more-body { border-left-color: rgba(129, 140, 248, 0.28); }
+  .ctx-note { background: rgba(255, 255, 255, 0.05); color: #6f7784; }
   .panel-composer, .panel-foot { background: #191c20; border-top-color: rgba(255, 255, 255, 0.07); }
   .input { background: #262a30; border-color: rgba(255, 255, 255, 0.12); color: #e3e5e8; }
   .input::placeholder { color: #6b7280; }
@@ -1169,6 +1186,29 @@
     return wrap;
   }
 
+  /**
+   * 本轮请求的上下文压缩说明。
+   *
+   * 历史被压成摘要时，用户有权知道「模型现在看到的对话不完整」——
+   * 否则模型答不出「第一轮说的那个」时，用户只会以为它变笨了。
+   * 没有任何压缩时返回 null，时间线保持安静。
+   */
+  function buildContextNote(turn) {
+    const info = turn.contextInfo;
+    if (!info) return null;
+    const summarized = info.summarizedTurns || 0;
+    const omitted = info.omittedTurns || 0;
+    if (summarized <= 0 && omitted <= 0) return null;
+
+    const bits = [`摘要 ${summarized} 轮`];
+    if (omitted > 0) bits.push(`另有 ${omitted} 轮已省略`);
+    const wrap = document.createElement('div');
+    wrap.className = 'ctx-note';
+    wrap.title = `多轮上下文按预算（${info.budget} 字符）压缩后随本轮请求发送：最近 ${info.fullTurns} 轮完整保留，更早的轮次压成摘要。`;
+    wrap.textContent = `已压缩更早对话：${bits.join('，')}`;
+    return wrap;
+  }
+
   function buildAiBlock(turn) {
     const wrap = document.createElement('div');
     wrap.className = 'msg msg-ai';
@@ -1181,6 +1221,14 @@
 
     const actions = document.createElement('div');
     actions.className = 'msg-actions';
+
+    const gotoBtn = document.createElement('button');
+    gotoBtn.className = 'mini-btn';
+    gotoBtn.dataset.act = 'goto-anchor';
+    gotoBtn.dataset.id = turn.id;
+    gotoBtn.textContent = '↩ 回看原文';
+    gotoBtn.title = '跳回页面上这段划词的位置';
+    actions.appendChild(gotoBtn);
 
     const copyBtn = document.createElement('button');
     copyBtn.className = 'mini-btn';
@@ -1278,6 +1326,8 @@
     els.timeline.innerHTML = '';
     for (const turn of session.turns) {
       els.timeline.appendChild(buildUserBlock(turn));
+      const note = buildContextNote(turn);
+      if (note) els.timeline.appendChild(note);
       els.timeline.appendChild(buildAiBlock(turn));
     }
     if (nearBottom) scrollTimelineToBottom();
@@ -1327,9 +1377,10 @@
 
   /**
    * 新增一轮提问
-   * @param {object} opts { mode, question, selection, context }
+   * @param {object} opts { mode, question, selection, context, anchor }
+   *   anchor 是划词起点的 DOM 位置（见 currentSelectionInfo），供「回看原文」用
    */
-  function startTurn({ mode, question = '', selection = '', context = '' }) {
+  function startTurn({ mode, question = '', selection = '', context = '', anchor = null }) {
     ensureUI();
     ensureSession();
     openPanel();
@@ -1340,6 +1391,8 @@
       question,
       selection,
       context,
+      // 划词锚点：追问轮沿用上一轮的锚点（语境连续，回看的目标也连续）
+      anchor: anchor || null,
       answer: '',
       // 分层回答的展开层；服务端没分层时它一直是空串
       detail: '',
@@ -1408,9 +1461,15 @@
     const old = session.turns[idx];
     if (old.status === 'pending') return;
 
-    // 丢弃这一轮及其之后的轮次，用同样的素材重新问一次
+    // 丢弃这一轮及其之后的轮次，用同样的素材重新问一次（锚点也一并带走）
     session.turns.splice(idx, session.turns.length - idx);
-    startTurn({ mode: old.mode, question: old.question, selection: old.selection, context: old.context });
+    startTurn({
+      mode: old.mode,
+      question: old.question,
+      selection: old.selection,
+      context: old.context,
+      anchor: old.anchor,
+    });
   }
 
   function abortRequest() {
@@ -1431,6 +1490,12 @@
     switch (msg.type) {
       case 'start':
         turn.model = msg.model || '';
+        // SW 在组装请求时算出的历史压缩情况（budget/压缩轮数）。有被压缩时
+        // 才值得在时间线里插一条说明 —— 没压缩时保持安静。
+        if (msg.contextInfo && (msg.contextInfo.summarizedTurns > 0 || msg.contextInfo.omittedTurns > 0)) {
+          turn.contextInfo = msg.contextInfo;
+          if (msg.reqId === session.activeId) renderTimeline();
+        }
         break;
 
       case 'delta': {
@@ -1510,6 +1575,7 @@
       question: q,
       selection: attach?.selection || attach?.text || '',
       context: attach?.context || '',
+      anchor: attach?.anchor || prev?.anchor || null,
     });
   }
 
@@ -1523,6 +1589,69 @@
   /* ================================================================
    * 复制 / 收藏
    * ================================================================ */
+
+  /**
+   * 回看原文：滚回这一轮划词时在页面上的位置，并打一记短暂高亮。
+   *
+   * 为什么存 DOM 位置而不是坐标：记录锚点的时刻选区还在视口里，
+   * 等用户想回看时页面早滚过几屏了 —— 只有 DOM 节点本身是稳定的。
+   * 代价是页面脚本重建过那块 DOM 时锚点会失效，此时如实告知，不做假跳转。
+   */
+  function gotoAnchor(turnId) {
+    const turn = session?.turns.find((t) => t.id === turnId);
+    if (!turn?.anchor) {
+      flashStatus('这一轮没有原文位置');
+      return;
+    }
+    const { node, offset } = turn.anchor;
+    const holder = node ? (node.nodeType === 1 ? node : node.parentElement) : null;
+    if (!holder || !document.contains(holder)) {
+      flashStatus('原文位置已失效（页面内容已变化）');
+      return;
+    }
+    try {
+      holder.scrollIntoView({ block: 'center', behavior: 'smooth' });
+    } catch {
+      holder.scrollIntoView(); // 老内核不支持 options 参数
+    }
+    // 平滑滚动需要时间，等基本到位后再打高亮，位置才准
+    setTimeout(() => flashAnchorHighlight(node, offset), 480);
+  }
+
+  /** 在锚点位置打一记 1 秒左右淡出的高亮，让用户一眼看到「就是这里」 */
+  function flashAnchorHighlight(node, offset) {
+    try {
+      const range = document.createRange();
+      range.setStart(node, offset);
+      range.collapse(true);
+      let rect = range.getBoundingClientRect();
+      if (!rect || (rect.width === 0 && rect.height === 0)) {
+        const el = node.nodeType === 1 ? node : node.parentElement;
+        rect = el?.getBoundingClientRect?.() || null;
+      }
+      if (!rect || (rect.width === 0 && rect.height === 0)) return;
+
+      const w = Math.max(rect.width, 36);
+      const h = Math.max(rect.height, 24);
+      const flash = document.createElement('div');
+      flash.style.cssText =
+        'all:initial;' +
+        `position:fixed;left:${rect.left + rect.width / 2 - w / 2}px;` +
+        `top:${rect.top + rect.height / 2 - h / 2}px;` +
+        `width:${w}px;height:${h}px;border-radius:5px;` +
+        'background:rgba(99,102,241,0.28);box-shadow:0 0 0 2px rgba(99,102,241,0.45);' +
+        'pointer-events:none;z-index:2147483646;opacity:1;transition:opacity 0.9s ease-out;';
+      (document.documentElement || document.body).appendChild(flash);
+      requestAnimationFrame(() => {
+        requestAnimationFrame(() => {
+          flash.style.opacity = '0';
+        });
+      });
+      setTimeout(() => flash.remove(), 1300);
+    } catch {
+      /* 高亮失败不影响跳转本身 */
+    }
+  }
 
   async function writeClipboard(text) {
     try {
@@ -1693,7 +1822,7 @@
           return;
         }
         if (!info) return;
-        startTurn({ mode, selection: info.text, context: info.context });
+        startTurn({ mode, selection: info.text, context: info.context, anchor: info.anchor });
         return;
       }
 
@@ -1724,6 +1853,9 @@
           break;
         case 'retry-turn':
           retryTurn(btn.dataset.id);
+          break;
+        case 'goto-anchor':
+          gotoAnchor(btn.dataset.id);
           break;
         case 'copy-all':
           copyAll();
@@ -1793,7 +1925,12 @@
       }
 
       if (autoMode) {
-        startTurn({ mode: settings.defaultMode || 'explain', selection: info.text, context: info.context });
+        startTurn({
+          mode: settings.defaultMode || 'explain',
+          selection: info.text,
+          context: info.context,
+          anchor: info.anchor,
+        });
       } else {
         showPopover(info);
       }
@@ -1825,6 +1962,7 @@
       mode: settings.quickAskMode || 'explain',
       selection: info.text,
       context: info.context,
+      anchor: info.anchor,
     });
   }
 
@@ -1921,7 +2059,7 @@
       openPanel();
       els.input.focus();
     } else {
-      startTurn({ mode, selection: info.text, context: info.context });
+      startTurn({ mode, selection: info.text, context: info.context, anchor: info.anchor });
     }
     sendResponse({ ok: true });
   }

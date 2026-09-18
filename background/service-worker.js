@@ -9,7 +9,7 @@
  */
 
 import { streamChat, chatOnce } from '../lib/llm.js';
-import { buildMessages, buildPingMessages, createLayerSplitter } from '../lib/prompts.js';
+import { buildRequest, buildPingMessages, createLayerSplitter } from '../lib/prompts.js';
 import {
   getSettings,
   saveSettings,
@@ -181,8 +181,10 @@ chrome.runtime.onConnect.addListener((port) => {
     const payload = msg.payload || {};
     const layered = settings.layered !== false;
     let messages;
+    let contextInfo;
     try {
-      messages = buildMessages({
+      // 预算从设置项来：用户按自己模型的窗口大小在设置页里调
+      ({ messages, contextInfo } = buildRequest({
         mode: payload.mode,
         selection: payload.selection,
         context: payload.context,
@@ -190,13 +192,15 @@ chrome.runtime.onConnect.addListener((port) => {
         question: payload.question,
         history: payload.history,
         layered,
-      });
+        budget: settings.contextBudget,
+      }));
     } catch (err) {
       safePost(port, { type: 'error', reqId, message: `组装请求失败：${err?.message || err}` });
       return;
     }
 
-    safePost(port, { type: 'start', reqId, model: settings.model });
+    // start 消息顺带告知本轮上下文被压缩成什么样，面板据此显示「带了多少历史」
+    safePost(port, { type: 'start', reqId, model: settings.model, contextInfo });
     const startedAt = Date.now();
     const batcher = createBatcher((text, part) => safePost(port, { type: 'delta', reqId, text, part }));
 

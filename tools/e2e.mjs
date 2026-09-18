@@ -62,6 +62,10 @@ const SNAPSHOT = `(() => {
   out.moreBodyText = moreBody ? moreBody.textContent.trim() : '';
 
   out.sendBox = box(q('.send'));
+
+  // 锚点回看按钮与上下文压缩说明
+  out.gotoBtn = box(q('[data-act="goto-anchor"]'));
+  out.ctxNote = q('.ctx-note') ? q('.ctx-note').textContent : null;
   return out;
 })()`;
 
@@ -328,6 +332,52 @@ async function main() {
       `实际发了 ${posted3.length} 条 —— 双击即问把三击也吞掉了，用户就没法「选整段再挑动作」`
     );
     check('三击走常规流程：气泡浮出，动作由用户挑', snap.popHidden === false);
+
+    /* ---------------------------------------------------------------- */
+
+    console.log('\n【11】压缩说明与锚点回看');
+    await cdp.navigate(HARNESS);
+    await sleep(400);
+    const para5 = await cdp.eval(`(() => { const r = document.getElementById('para').getBoundingClientRect();
+      return { left: r.left, top: r.top }; })()`);
+    await cdp.doubleClickAt(para5.left + 20, para5.top + 10);
+    await sleep(600);
+    snap = await cdp.eval(SNAPSHOT);
+    check('双击已发起提问（准备验证压缩说明与锚点）', snap.panelHidden === false);
+
+    // SW 在历史被压缩时，start 消息会带上 contextInfo —— 面板要如实告知
+    const reqId5 = await cdp.eval('(window.__port.posted[0] || {}).reqId');
+    await cdp.eval(`window.__emit({ type: 'start', reqId: ${JSON.stringify(reqId5)}, model: 'stub-model',
+      contextInfo: { budget: 30000, totalTurns: 10, fullTurns: 3, summarizedTurns: 5, omittedTurns: 2 } })`);
+    await sleep(200);
+    snap = await cdp.eval(SNAPSHOT);
+    check(
+      '历史被压缩时，面板出现压缩说明',
+      /摘要 5 轮/.test(snap.ctxNote || '') && /2 轮/.test(snap.ctxNote || ''),
+      `实际：${JSON.stringify(snap.ctxNote)}`
+    );
+
+    await cdp.eval(`window.__emit({ type: 'done', reqId: ${JSON.stringify(reqId5)},
+      answer: '压缩说明下的正常回答。', detail: '', saved: false, recordId: 'stub', elapsed: 10, model: 'stub-model' })`);
+    await sleep(200);
+
+    // 锚点回看：先滚到页面底部，再点「回看原文」，应滚回划词位置
+    await cdp.eval('window.scrollTo(0, document.documentElement.scrollHeight)');
+    await sleep(250);
+    const farScroll = await cdp.eval('window.scrollY');
+    check('页面已滚离划词位置', farScroll > 200, `scrollY=${farScroll}`);
+    snap = await cdp.eval(SNAPSHOT);
+    check('「回看原文」按钮存在', !!snap.gotoBtn);
+    if (snap.gotoBtn) {
+      await cdp.clickAt(snap.gotoBtn.x, snap.gotoBtn.y);
+      await sleep(1100); // 覆盖 gotoAnchor 里 480ms 的等滚动延迟 + 平滑滚动本身
+      const backScroll = await cdp.eval('window.scrollY');
+      check(
+        '点击后滚回了划词位置',
+        backScroll < 120,
+        `滚回后 scrollY=${backScroll}（划词位置在页首附近，应接近 0）`
+      );
+    }
   } finally {
     await close();
   }

@@ -72,6 +72,12 @@
         <p class="hint">越低越稳定保守，查知识建议 0.2~0.4。</p>
       </div>
 
+      <div class="row">
+        <label for="contextBudget">上下文预算 <span class="value" id="contextBudgetValue">30000</span> 字符</label>
+        <input type="range" id="contextBudget" min="6000" max="120000" step="2000" value="30000">
+        <p class="hint">多轮追问时，发给模型的全部内容（含历史压缩摘要）不超过这个量。模型窗口小就调低，窗口大想多带历史就调高。改动立即生效。</p>
+      </div>
+
       <div class="actions">
         <button class="primary-btn" id="saveBtn">保存并测试连接</button>
         <button class="ghost-btn" id="testOnlyBtn">仅测试</button>

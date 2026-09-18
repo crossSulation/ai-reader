@@ -125,6 +125,7 @@ function readForm() {
     apiKey: $('#apiKey').value.trim(),
     model: $('#model').value.trim(),
     temperature: Number($('#temperature').value),
+    contextBudget: Number($('#contextBudget').value),
     trigger: ($$('#triggerRadios input:checked')[0] || {}).value || 'chip',
     defaultMode: $('#defaultMode').value || 'explain',
     dblclickAsk: $('#dblclickAsk').checked,
@@ -148,6 +149,10 @@ function fillForm(s) {
   $('#model').value = currentSettings.model || '';
   $('#temperature').value = String(currentSettings.temperature ?? 0.3);
   $('#tempValue').textContent = String(currentSettings.temperature ?? 0.3);
+
+  const budget = Number(currentSettings.contextBudget ?? 30000) || 30000;
+  $('#contextBudget').value = String(budget);
+  $('#contextBudgetValue').textContent = String(budget);
 
   const trigger = currentSettings.trigger || 'chip';
   $$('#triggerRadios input').forEach((r) => {
@@ -268,6 +273,10 @@ function bindForm() {
     $('#tempValue').textContent = e.target.value;
   });
 
+  $('#contextBudget').addEventListener('input', (e) => {
+    $('#contextBudgetValue').textContent = e.target.value;
+  });
+
   $('#maxHistory').addEventListener('input', (e) => {
     $('#maxHistoryValue').textContent = e.target.value;
   });
@@ -282,6 +291,7 @@ function bindForm() {
   $('#layered').addEventListener('change', (e) => persistQuiet({ layered: e.target.checked }));
   $('#autoSave').addEventListener('change', (e) => persistQuiet({ autoSave: e.target.checked }));
   $('#maxHistory').addEventListener('change', (e) => persistQuiet({ maxHistory: Number(e.target.value) }));
+  $('#contextBudget').addEventListener('change', (e) => persistQuiet({ contextBudget: Number(e.target.value) }));
   $('#modeChecks').addEventListener('change', () => {
     const modes = $$('#modeChecks input:checked').map((i) => i.value);
     if (!modes.includes('ask')) modes.push('ask');
