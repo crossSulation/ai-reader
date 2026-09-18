@@ -156,6 +156,32 @@ async function main() {
     await sleep(400);
     await shoot('screenshot-2-panel.png');
 
+    /* --- 小宣传图 440×280：商店 listing 的 promo tile，缺了排名会靠后 --- */
+    await cdp.send('Emulation.setDeviceMetricsOverride', {
+      width: 440, height: 280, deviceScaleFactor: 1, mobile: false,
+    });
+    await cdp.eval(`(() => {
+      document.documentElement.style.overflow = 'hidden';
+      document.body.style.overflow = 'hidden';
+      document.getElementById('promo-tile')?.remove();
+      const tile = document.createElement('div');
+      tile.id = 'promo-tile';
+      tile.style.cssText = 'position:fixed;inset:0;z-index:2147483647;overflow:hidden;' +
+        'background:linear-gradient(135deg,#6d28d9 0%,#8b5cf6 52%,#a78bfa 100%);' +
+        'display:flex;flex-direction:column;align-items:center;justify-content:center;' +
+        'font-family:system-ui,-apple-system,"Segoe UI",sans-serif;';
+      tile.innerHTML = [
+        '<div style="position:absolute;width:220px;height:220px;border-radius:50%;background:rgba(255,255,255,.08);right:-60px;top:-70px"></div>',
+        '<div style="position:absolute;width:150px;height:150px;border-radius:50%;background:rgba(255,255,255,.06);left:-40px;bottom:-50px"></div>',
+        '<img src="../icons/icon128.png" alt="" style="width:76px;height:76px;border-radius:18px;box-shadow:0 6px 18px rgba(30,10,80,.35)">',
+        '<div style="color:#fff;font-size:30px;font-weight:700;margin-top:16px;letter-spacing:.02em">AI 阅读助手</div>',
+        '<div style="color:rgba(255,255,255,.88);font-size:14px;margin-top:8px;letter-spacing:.04em">划词即问 · 双击即问 · 随时追问</div>',
+      ].join('');
+      document.documentElement.appendChild(tile);
+    })()`);
+    await sleep(400);
+    await shoot('tile-440.png');
+
     console.log(`\n完成，共 ${shots.length} 张，输出目录：store/`);
   } finally {
     await close();
