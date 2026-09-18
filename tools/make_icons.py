@@ -123,7 +123,20 @@ def write_png(path, width, height, raw):
 
 
 if __name__ == '__main__':
-    out_dir = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), 'icons')
+    import sys
+
+    root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+
+    if '--store' in sys.argv:
+        # 商店素材：Edge 要求一张 300×300 的商店 Logo；同一套几何绘制直接放大即可
+        # （图标是矢量式绘制，放大到 300 依然锐利，不是位图拉伸）
+        out_dir = os.path.join(root, 'store')
+        os.makedirs(out_dir, exist_ok=True)
+        p = make_icon(300, os.path.join(out_dir, 'logo-300.png'))
+        print(f'{p}  {os.path.getsize(p)} bytes')
+        sys.exit(0)
+
+    out_dir = os.path.join(root, 'icons')
     os.makedirs(out_dir, exist_ok=True)
     for s in (16, 32, 48, 128):
         p = make_icon(s, os.path.join(out_dir, f'icon{s}.png'))

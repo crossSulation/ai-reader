@@ -67,6 +67,18 @@ node tools/make_preview.mjs   # 生成 tools/preview.html，用浏览器打开
 
 预览页的样式和 DOM 是**从 `content/content.js` 实时抽取**的，不是另画一版，所以看到的排版就是实际效果（跟随系统深浅色）。
 
+## 发布到扩展商店
+
+完整流程（Chrome Web Store / Edge 加载项的账号注册、上传、审核填表答案、常见拒绝原因）见 [docs/PUBLISH.md](docs/PUBLISH.md)，商店文案与逐项填表答案见 [docs/store-listing.md](docs/store-listing.md)。上架用的所有物料都能一条命令生成：
+
+```bash
+npm run package        # dist/ai-reader-<版本>.zip（含发布体检：版本号、图标、远程代码、密钥泄漏等检查）
+npm run store:logo     # store/logo-300.png（Edge 必填的 300×300 商店 Logo）
+npm run screenshots    # store/screenshot-*.png（1280×800 真实使用截图）
+```
+
+隐私政策在 [PRIVACY.md](PRIVACY.md)，商店要求的公开 URL 直接用它在 GitHub 上的链接。
+
 ## 安全设计
 
 - **密钥只存本机**（`chrome.storage.local`，明文但绝不经 `storage.sync` 同步到其他设备），所有请求从你的浏览器直连你填的服务商，**没有任何中转服务器**。
@@ -96,13 +108,18 @@ ai-reader/
 │   └── store.js             # 设置/历史持久化（串行写队列、幂等去重）、Markdown 导出
 ├── options/                 # 设置页 + 历史面板
 ├── popup/                   # 工具栏弹窗
+├── docs/                    # 上架手册（PUBLISH.md）与商店文案（store-listing.md）
+├── store/                   # 商店素材：截图（1280×800）、Edge 300×300 Logo（脚本生成，不入包）
+├── PRIVACY.md               # 隐私政策（商店必填的公开 URL 指向它）
 └── tools/
-    ├── make_icons.py        # 图标生成（纯标准库手写 PNG）
+    ├── make_icons.py        # 图标生成（纯标准库手写 PNG；--store 另出 300×300 Logo）
+    ├── make_screenshots.mjs # 商店截图：真实 Chrome 走一遍划词→回答路径，精确 1280×800
+    ├── package.mjs          # 上架打包：最小 ZIP 写入器 + 发布前体检
     ├── make_preview.mjs     # 从真实源码抽取 CSS/DOM 生成静态预览页
-    ├── selftest.mjs         # 静态自测：直接加载真实源码跑 55 项断言
+    ├── selftest.mjs         # 静态自测：直接加载真实源码跑 62 项断言
     ├── cdp.mjs              # 极简 CDP 工具箱：起 Chrome / 起本地服务 / 手写协议客户端
     ├── harness.html         # 内容脚本的测试页（桩掉 chrome.* API，加载真实 content.js）
-    ├── e2e.mjs              # 端到端回归：真实 Chrome + 真实鼠标事件（37 项）
+    ├── e2e.mjs              # 端到端回归：真实 Chrome + 真实鼠标事件（42 项）
     └── e2e-ui.mjs           # 扩展页面回归：真实 popup / options 页 + 计算样式断言
 ```
 
@@ -190,6 +207,8 @@ popup/options 两页的 `hidden` 不变量是否被 CSS 盖掉、JS 引用的元
     （而不是会随滚动作废的坐标），点击后平滑滚回并短暂高亮；DOM 被页面脚本重建导致
     锚点失效时如实提示。追问轮沿用上一轮锚点，语境与回看目标保持连续。
   - 自测 55 → 62 项，端到端 37 → 42 项（新增真实点击「回看原文」滚回划词位置的断言）。
+  - 新增上架物料链路：`npm run package`（打包 + 发布体检）、商店截图与 300×300 Logo 生成器、
+    发布手册（docs/PUBLISH.md）、商店文案（docs/store-listing.md）与隐私政策（PRIVACY.md）。
 - **1.2.1** 多轮对话不再无界膨胀。此前只有「单条消息 4000 字」的围栏，没有总量水表：
   追问十几轮后请求会涨到几万字（轻则账单难看，重则直接超模型上下文报错）。现在的策略是
   **最近 3 轮完整保留 + 更早的压成一行摘要 + 整次请求封顶 3 万字符**，被略过的轮次会写一句

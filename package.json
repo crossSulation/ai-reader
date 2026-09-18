@@ -10,6 +10,10 @@
     "test:e2e": "node tools/e2e.mjs",
     "test:e2e-ui": "node tools/e2e-ui.mjs",
     "test:all": "node tools/selftest.mjs && node tools/e2e.mjs && node tools/e2e-ui.mjs",
+    "package": "node tools/package.mjs",
+    "package:check": "node tools/package.mjs --check",
+    "screenshots": "node tools/make_screenshots.mjs",
+    "store:logo": "python tools/make_icons.py --store",
     "preview": "node tools/make_preview.mjs",
     "icons": "python tools/make_icons.py"
   },
