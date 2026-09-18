@@ -16,7 +16,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import { buildEndpoint, originPatternOf } from '../lib/llm.js';
-import { buildMessages, MODES, LAYER_MARKER, splitLayered, createLayerSplitter } from '../lib/prompts.js';
+import { buildMessages, MODES, LAYER_MARKER, splitLayered, createLayerSplitter, TOTAL_CHAR_BUDGET, RECENT_TURNS_FULL, HISTORY_SUMMARY_TITLE } from '../lib/prompts.js';
 import { recordId, toMarkdown, domainOf } from '../lib/store.js';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
@@ -373,6 +373,30 @@ test('复制与存档必须带上展开层，不能只给结论层', () => {
   assert.ok(star.includes('detail: turn.detail'), '手动存档没有把展开层写进记录');
 });
 
+test('多轮历史必须送完整答案，否则追问「上面第三点」时模型看不见', () => {
+  // 与复制/存档同一条道理：折叠是显示状态，历史里塞半截答案会让多轮对话失真。
+  const at = contentSrc.indexOf('const history = [];');
+  assert.ok(at > -1, '找不到 history 组装块');
+  const block = contentSrc.slice(at, at + 900);
+  assert.ok(block.includes('turnFullAnswer(t)'), 'history 组装没有走 turnFullAnswer，展开层会丢');
+});
+
+test('上下文份量控制只有一处定义：别处不得再写一份裁剪规则', () => {
+  // 与「标记字面量只允许出现在 lib/prompts.js」同源的经验：
+  // 同一件事有两个实现，就一定会在某次改动后漂移，而且是静默漂移。
+  const sw = fs.readFileSync(path.join(root, 'background/service-worker.js'), 'utf8');
+  assert.ok(sw.includes('history: payload.history'), 'service worker 应把轮次原样交给 buildMessages');
+
+  const names = ['TOTAL_CHAR_BUDGET', 'RECENT_TURNS_FULL', 'MAX_HISTORY_MESSAGE', 'HISTORY_SUMMARY_TITLE'];
+  const re = new RegExp(`\\b(?:const|let|var)\\s+(?:${names.join('|')})\\b`);
+  const offenders = [];
+  for (const rel of ['content/content.js', 'background/service-worker.js']) {
+    const src = fs.readFileSync(path.join(root, rel), 'utf8');
+    if (re.test(src)) offenders.push(rel);
+  }
+  assert.deepEqual(offenders, [], `预算常量被别处重新定义：${offenders.join('、')}`);
+});
+
 test('展开状态必须记在 turn 上，不能只挂在 DOM 上', () => {
   // 流式期间每来一段增量都会重写 .msg-body 的 innerHTML：
   // 状态若只存在 DOM 属性里，用户刚点开的细节会被下一次重绘悄悄折叠回去。
@@ -583,6 +607,160 @@ test('分隔标记的字面量只允许出现在 lib/prompts.js', () => {
     [],
     `${dup.join('、')} 里出现了分隔标记的字面量，解析逻辑应当只留在 lib/prompts.js`
   );
+});
+
+/* ------------------------------------------------------------------ */
+/* [8] 上下文预算（lib/prompts.js）                                     */
+/* ------------------------------------------------------------------ */
+
+console.log('\n[8] 多轮上下文预算（lib/prompts.js）');
+
+/** 造 n 轮历史，每轮答案 len 字 */
+function makeHistory(n, len) {
+  const out = [];
+  for (let i = 1; i <= n; i++) {
+    out.push({ role: 'user', content: `第${i}轮：请解释这段` });
+    out.push({ role: 'assistant', content: `第${i}轮答案：${'答'.repeat(len)}` });
+  }
+  return out;
+}
+
+const msgChars = (msgs) => msgs.reduce((n, m) => n + m.content.length, 0);
+const lastUser = (msgs) => msgs[msgs.length - 1].content;
+
+test('轮次不多时行为照旧：不出现摘要段，历史原样作为独立消息', () => {
+  const msgs = buildMessages({
+    mode: 'ask',
+    selection: 'ETag',
+    question: '那它为什么会抖动？',
+    history: makeHistory(RECENT_TURNS_FULL, 100),
+  });
+  assert.equal(lastUser(msgs).includes(HISTORY_SUMMARY_TITLE), false, '不该有摘要段');
+  assert.deepEqual(
+    msgs.map((m) => m.role[0]).join(''),
+    's' + 'ua'.repeat(RECENT_TURNS_FULL) + 'u',
+    '应当保持 user/assistant 交替'
+  );
+});
+
+test('长对话被压进预算内（历史上限不会再无界膨胀）', () => {
+  const huge = buildMessages({
+    mode: 'ask',
+    selection: 'ETag',
+    question: '继续',
+    history: makeHistory(200, 4000),
+  });
+  assert.ok(
+    msgChars(huge) <= TOTAL_CHAR_BUDGET,
+    `总字符 ${msgChars(huge)} 超过预算 ${TOTAL_CHAR_BUDGET}`
+  );
+});
+
+test('超预算时最近几轮完整保留，而不是被摘要替换', () => {
+  const msgs = buildMessages({
+    mode: 'ask',
+    selection: 'ETag',
+    question: '继续',
+    history: makeHistory(50, 4000),
+  });
+  const assistants = msgs.filter((m) => m.role === 'assistant');
+  assert.equal(assistants.length, RECENT_TURNS_FULL, `完整保留的轮次应为 ${RECENT_TURNS_FULL}`);
+  // 最近一轮（第 50 轮）必须在完整消息里逐字可见，说明没被压成摘要
+  assert.ok(assistants[assistants.length - 1].content.startsWith('第50轮答案：'));
+  assert.ok(!lastUser(msgs).includes('第50轮答案'), '最近一轮不该同时出现在摘要里');
+});
+
+test('更早的轮次压成摘要：保留问题与答案的线索', () => {
+  const msgs = buildMessages({
+    mode: 'ask',
+    selection: 'ETag',
+    question: '继续',
+    history: makeHistory(20, 300),
+  });
+  const tail = lastUser(msgs);
+  assert.ok(tail.includes(HISTORY_SUMMARY_TITLE), '应当出现摘要段');
+  assert.ok(tail.includes('第1轮答案'), '最早的轮次要能在摘要里找到线索');
+  assert.ok(tail.includes('答：'), '摘要里应同时保留问题与答案');
+  // 摘要不是无节制的复制：单轮摘要远短于原文
+  assert.ok(tail.length < 20 * 300, '摘要不该把原文照搬进来');
+});
+
+test('预算不够装下所有轮次时，给出省略提示而不是静默丢弃', () => {
+  const msgs = buildMessages({
+    mode: 'ask',
+    selection: 'x'.repeat(2900), // 顺便把素材本身也撑满，进一步挤压历史预算
+    context: 'y'.repeat(1200),
+    question: 'z'.repeat(800),
+    history: makeHistory(200, 4000),
+  });
+  const tail = lastUser(msgs);
+  assert.ok(/（更早还有 \d+ 轮对话已省略）/.test(tail), `缺少省略提示：${tail.slice(0, 120)}`);
+  assert.ok(msgChars(msgs) <= TOTAL_CHAR_BUDGET, `压缩后仍必须在上界内（实际 ${msgChars(msgs)}）`);
+  // 省略提示里的轮次数必须与实际丢弃数一致，否则提示就是假的
+  const omitted = Number(tail.match(/更早还有 (\d+) 轮/)[1]);
+  const keptFull = msgs.filter((m) => m.role === 'assistant').length;
+  assert.equal(keptFull, RECENT_TURNS_FULL);
+  assert.ok(omitted > 0 && omitted < 200 - RECENT_TURNS_FULL + 1, `省略轮次数不合理：${omitted}`);
+});
+
+test('摘要段插在「选中内容」与「本次任务」之间，不打断素材块', () => {
+  const msgs = buildMessages({
+    mode: 'ask',
+    selection: 'ETag 抖动',
+    question: '继续',
+    history: makeHistory(20, 500),
+  });
+  const tail = lastUser(msgs);
+  const iSel = tail.indexOf('SELECTION>>>');
+  const iSum = tail.indexOf(HISTORY_SUMMARY_TITLE);
+  const iTask = tail.indexOf('【本次任务】');
+  assert.ok(iSel > -1 && iSum > -1 && iTask > -1);
+  assert.ok(iSel < iSum && iSum < iTask, `顺序不对：选区 ${iSel} / 摘要 ${iSum} / 任务 ${iTask}`);
+});
+
+test('历史里开头的孤儿 assistant 被丢弃（Anthropic 要求以 user 开头）', () => {
+  const msgs = buildMessages({
+    mode: 'ask',
+    selection: 'x',
+    question: 'q',
+    history: [
+      { role: 'assistant', content: '孤儿回答' },
+      { role: 'user', content: '正常问题' },
+      { role: 'assistant', content: '正常回答' },
+    ],
+  });
+  assert.equal(msgs[1].role, 'user', '第二条消息必须是 user');
+  assert.ok(!msgs.some((m) => m.content === '孤儿回答'), '孤儿 assistant 不该出现');
+  assert.ok(msgs.some((m) => m.content === '正常回答'), '正常轮次不该被连带丢掉');
+});
+
+test('缺答案的轮次以占位补齐，不产生连续两条 user 消息', () => {
+  const msgs = buildMessages({
+    mode: 'ask',
+    selection: 'x',
+    question: 'q',
+    history: [
+      { role: 'user', content: '第一问' },
+      { role: 'assistant', content: '第一答' },
+      { role: 'user', content: '第二问（没有答案）' },
+    ],
+  });
+  const roles = msgs.map((m) => m.role);
+  for (let i = 1; i < roles.length; i++) {
+    assert.notEqual(roles[i], roles[i - 1], `第 ${i} 条与前一条角色相同：${roles.join(',')}`);
+  }
+  assert.ok(msgs.some((m) => m.content === '(未完成)'), '缺答案的轮次应有占位');
+});
+
+test('单条历史消息仍受 4000 字上限约束', () => {
+  const msgs = buildMessages({
+    mode: 'ask',
+    selection: 'x',
+    question: 'q',
+    history: makeHistory(2, 9000),
+  });
+  const assistant = msgs.find((m) => m.role === 'assistant');
+  assert.ok(assistant.content.length < 4200, `单条长度 ${assistant.content.length} 未被截断`);
 });
 
 /* ------------------------------------------------------------------ */

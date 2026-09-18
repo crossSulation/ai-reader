@@ -60,6 +60,8 @@ const SNAPSHOT = `(() => {
   const moreBody = q('.more-body');
   out.moreBodyHidden = moreBody ? moreBody.hidden : null;
   out.moreBodyText = moreBody ? moreBody.textContent.trim() : '';
+
+  out.sendBox = box(q('.send'));
   return out;
 })()`;
 
@@ -273,7 +275,44 @@ async function main() {
 
     /* ---------------------------------------------------------------- */
 
-    console.log('\n【9】三击选中整段 → 不该走「双击即问」');
+    console.log('\n【9】第二轮追问 → 历史轮次随请求带上（多轮语境）');
+    await cdp.eval(`(() => {
+      const ta = document.querySelector('arc-reader-ui').shadowRoot.querySelector('.input');
+      ta.value = '它和自注意力有什么区别？';
+      ta.dispatchEvent(new Event('input', { bubbles: true }));
+    })()`);
+    snap = await cdp.eval(SNAPSHOT);
+    if (!snap.sendBox) {
+      check('能取到发送按钮坐标', false, '面板底部没有发送按钮，跳过追问测试');
+    } else {
+      await cdp.clickAt(snap.sendBox.x, snap.sendBox.y);
+      await sleep(400);
+
+      const posted4 = await cdp.eval('window.__port.posted');
+      check('追问发出了第二条请求', posted4.length === 2, `实际 ${posted4.length} 条`);
+      const hist = posted4[1]?.payload?.history || [];
+      check(
+        '历史轮次被带上（user + assistant 成对）',
+        hist.length === 2 && hist[0].role === 'user' && hist[1].role === 'assistant',
+        `实际：${JSON.stringify(hist.map((h) => h.role))}`
+      );
+      // 折叠只是显示状态；模型必须看到展开层，否则用户追问「展开讲讲上面第三点」时它会说没写过
+      check(
+        '历史里带的是完整答案（含折叠的展开层）',
+        (hist[1]?.content || '').includes('补一句'),
+        `历史里只有结论层：${JSON.stringify((hist[1]?.content || '').slice(0, 60))}`
+      );
+      check(
+        '追问沿用上一轮的选区（语境连续）',
+        (posted4[1]?.payload?.selection || '') === (posted2[0]?.payload?.selection || '') &&
+          (posted4[1]?.payload?.selection || '').length > 0,
+        `首轮=${JSON.stringify(posted2[0]?.payload?.selection)} 追问=${JSON.stringify(posted4[1]?.payload?.selection)}`
+      );
+    }
+
+    /* ---------------------------------------------------------------- */
+
+    console.log('\n【10】三击选中整段 → 不该走「双击即问」');
     await cdp.navigate(HARNESS);
     await sleep(400);
     const para3 = await cdp.eval(`(() => { const r = document.getElementById('para').getBoundingClientRect();

@@ -1,6 +1,6 @@
 {
   "name": "ai-reader",
-  "version": "1.2.0",
+  "version": "1.2.1",
   "private": true,
   "type": "module",
   "description": "划词即问的浏览器阅读助手：选中或双击网页文字，用你自己的大模型即时解释、翻译、追问；结论先行、细节可展开，答案自动存档并可导出 Markdown。",
