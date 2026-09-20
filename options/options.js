@@ -9,6 +9,13 @@
 import { PRESETS, originPatternOf } from '../lib/llm.js';
 import { MODES } from '../lib/prompts.js';
 import { DEFAULT_SETTINGS } from '../lib/store.js';
+import {
+  normalizeNotionId,
+  looksLikeNotionId,
+  obsidianUri,
+  obsidianFilePath,
+  sanitizeName,
+} from '../lib/exporters.js';
 
 const $ = (sel) => document.querySelector(sel);
 const $$ = (sel) => Array.from(document.querySelectorAll(sel));
@@ -134,6 +141,11 @@ function readForm() {
     selectedModes: modes,
     autoSave: $('#autoSave').checked,
     maxHistory: Number($('#maxHistory').value),
+    // 笔记集成：粘贴链接也认，入库前统一成裸 ID
+    obsidianVault: $('#obsidianVault').value.trim(),
+    obsidianFolder: $('#obsidianFolder').value.trim(),
+    notionToken: $('#notionToken').value.trim(),
+    notionParentId: normalizeNotionId($('#notionParentId').value),
     configured: !!( $('#baseUrl').value.trim() && $('#apiKey').value.trim() && $('#model').value.trim()),
   };
 }
@@ -173,6 +185,12 @@ function fillForm(s) {
   $('#autoSave').checked = !!currentSettings.autoSave;
   $('#maxHistory').value = String(currentSettings.maxHistory ?? 800);
   $('#maxHistoryValue').textContent = String(currentSettings.maxHistory ?? 800);
+
+  $('#obsidianVault').value = currentSettings.obsidianVault || '';
+  $('#obsidianFolder').value = currentSettings.obsidianFolder || '';
+  $('#notionToken').value = currentSettings.notionToken || '';
+  $('#notionParentId').value = currentSettings.notionParentId || '';
+  renderIntegrateHint();
 
   $('#keyHint').textContent = currentSettings.apiKey
     ? '密钥以明文保存在本机扩展存储中。建议单独申请一个低额度 Key 专供本插件使用。'
@@ -291,6 +309,18 @@ function bindForm() {
   $('#layered').addEventListener('change', (e) => persistQuiet({ layered: e.target.checked }));
   $('#autoSave').addEventListener('change', (e) => persistQuiet({ autoSave: e.target.checked }));
   $('#maxHistory').addEventListener('change', (e) => persistQuiet({ maxHistory: Number(e.target.value) }));
+
+  // 笔记集成：改完就存，不用等「保存并测试」——它跟模型接入是两码事
+  for (const id of ['obsidianVault', 'obsidianFolder', 'notionToken', 'notionParentId']) {
+    $(`#${id}`).addEventListener('change', (e) => {
+      const value = id === 'notionParentId' ? normalizeNotionId(e.target.value) : e.target.value.trim();
+      if (id === 'notionParentId' && value) e.target.value = value;
+      persistQuiet({ [id]: value });
+      renderIntegrateHint();
+    });
+  }
+  $('#notionConnect').addEventListener('click', onNotionConnect);
+  $('#obsidianTest').addEventListener('click', onObsidianTest);
   $('#contextBudget').addEventListener('change', (e) => persistQuiet({ contextBudget: Number(e.target.value) }));
   $('#modeChecks').addEventListener('change', () => {
     const modes = $$('#modeChecks input:checked').map((i) => i.value);
@@ -368,6 +398,140 @@ async function renderPermissions() {
   box.innerHTML = real
     .map((o) => `<div class="perm-item"><span class="pill">已授权</span>${escapeHtml(o)}</div>`)
     .join('');
+}
+
+/* ================================================================
+ * 笔记集成（Obsidian / Notion）
+ * ================================================================ */
+
+const NOTION_ORIGIN = 'https://api.notion.com/*';
+
+function renderIntegrateHint() {
+  const note = $('#integrateNote');
+  if (!note) return;
+  const hasToken = !!$('#notionToken').value.trim();
+  const hasParent = looksLikeNotionId($('#notionParentId').value);
+  if (hasToken && hasParent) {
+    note.textContent = 'Notion 已填写。点「连接 Notion 并测试」验证令牌和页面权限。';
+  } else if (hasToken || hasParent) {
+    note.textContent = '令牌与父页面都填好之后才能导出到 Notion。';
+  } else {
+    note.textContent = 'Obsidian 无需授权，填好库名就能用；Notion 需要上面两项配置。';
+  }
+}
+
+/**
+ * 连接 Notion：申请域名权限 → 校验令牌 → 校验父页面。
+ *
+ * chrome.permissions.request 必须吃用户手势，所以它是这个回调里**第一个** await ——
+ * 先 await 别的东西（哪怕只是 contains 查询）都会让手势失效，弹窗就不会出现。
+ */
+async function onNotionConnect() {
+  const btn = $('#notionConnect');
+  const note = $('#integrateNote');
+
+  let granted = false;
+  try {
+    granted = await chrome.permissions.request({ origins: [NOTION_ORIGIN] });
+  } catch (err) {
+    note.textContent = `申请权限失败：${err?.message || err}`;
+    return;
+  }
+  if (!granted) {
+    note.textContent = '未授予 api.notion.com 的访问权限，导出到 Notion 会被浏览器拦下。';
+    return;
+  }
+
+  const token = $('#notionToken').value.trim();
+  const parent = normalizeNotionId($('#notionParentId').value);
+  if (!token) {
+    note.textContent = '先填写 Notion 集成令牌。';
+    return;
+  }
+  $('#notionParentId').value = parent;
+  await persistQuiet({ notionToken: token, notionParentId: parent });
+
+  btn.disabled = true;
+  btn.textContent = '连接中…';
+  try {
+    const res = await send({ type: 'export:test-notion', token, parentId: parent });
+    note.textContent = res?.ok
+      ? `连接正常：集成「${res.botName}」· 父页面「${res.parentTitle}」已就绪。`
+      : `连接失败：${res?.error || '未知错误'}`;
+    await renderPermissions();
+  } catch (err) {
+    note.textContent = `连接失败：${err?.message || err}`;
+  } finally {
+    btn.disabled = false;
+    btn.textContent = '连接 Notion 并测试';
+  }
+}
+
+/** 往 Obsidian 写一篇测试笔记，用来确认库名/文件夹填对了 */
+async function onObsidianTest() {
+  const note = $('#integrateNote');
+  const vault = $('#obsidianVault').value.trim();
+  const folder = $('#obsidianFolder').value.trim();
+  const name = sanitizeName('AI 阅读助手 · 配置测试', 60);
+  const content = [
+    '# 配置测试',
+    '',
+    '能看到这篇笔记，说明 Obsidian 这条链路是通的。',
+    '',
+    `库名：${vault || '(最近打开的库)'}`,
+    `文件夹：${folder || '(库根目录)'}`,
+    '',
+  ].join('\n');
+
+  try {
+    await chrome.tabs.create({
+      url: obsidianUri({ vault, file: obsidianFilePath(folder, name), content }),
+    });
+    note.textContent = '已发往 Obsidian，去库里看一眼有没有出现这篇测试笔记。';
+  } catch (err) {
+    note.textContent = `打开 Obsidian 失败：${err?.message || err}`;
+  }
+}
+
+/**
+ * 批量推送历史记录。
+ * 一次导出合并成一篇笔记 / 一个 Notion 页面 —— 逐条建笔记会让库瞬间被灌满，
+ * 而且几百次协议调用也不现实。
+ */
+async function pushBatchTo(target) {
+  const rows = historyFiltered.length ? historyFiltered : allRecords;
+  if (!rows.length) {
+    toast('没有可导出的记录');
+    return;
+  }
+  if (target === 'obsidian' && rows.length > 10) {
+    const ok = confirm(
+      `将把当前 ${rows.length} 条记录合并成一篇笔记写入 Obsidian。\n\n内容较长时会自动分成几次写入（每段都进同一篇笔记）。继续？`
+    );
+    if (!ok) return;
+  }
+
+  const btn = target === 'obsidian' ? $('#exportObsidianBtn') : $('#exportNotionBtn');
+  const label = btn.textContent;
+  btn.disabled = true;
+  btn.textContent = '发送中…';
+  try {
+    const res = await send({ type: 'export:save', target, records: rows });
+    if (!res?.ok) {
+      toast(res?.error || '发送失败', 4200);
+      return;
+    }
+    if (target === 'obsidian') {
+      toast(`已写入 Obsidian：${res.file}${res.chunks > 1 ? `（分 ${res.chunks} 段）` : ''}`, 3600);
+    } else {
+      toast(`已在 Notion 新建页面，写入 ${rows.length} 条记录`, 3600);
+    }
+  } catch (err) {
+    toast(`发送失败：${err?.message || err}`, 4200);
+  } finally {
+    btn.disabled = false;
+    btn.textContent = label;
+  }
 }
 
 /* ================================================================
@@ -613,6 +777,9 @@ async function bootstrap() {
   fillModeOptions();
   bindForm();
   bindHistoryDelegation();
+
+  $('#exportObsidianBtn').addEventListener('click', () => pushBatchTo('obsidian'));
+  $('#exportNotionBtn').addEventListener('click', () => pushBatchTo('notion'));
 
   updateModeCheckHint = () => {};
 

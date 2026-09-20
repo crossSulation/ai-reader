@@ -378,6 +378,124 @@ async function main() {
         `滚回后 scrollY=${backScroll}（划词位置在页首附近，应接近 0）`
       );
     }
+    /* ---------------------------------------------------------------- */
+
+    console.log('\n【12】面板导出菜单（真实点击 + 消息断言）');
+
+    // 给桩塞返回值：导出状态与导出结果。内容脚本据此渲染菜单与提示
+    await cdp.eval(`(() => {
+      window.__msgStub = {
+        'export:status': {
+          ok: true,
+          obsidian: { vault: '我的笔记库', folder: 'AI 阅读助手' },
+          notion: { configured: false, granted: false, ready: false },
+        },
+        'export:save': { ok: true, target: 'obsidian', file: '解释 · 注意力机制 · 2026-09-20', chunks: 1 },
+        'export:markdown': { ok: true, markdown: '# 标题\\n\\n正文' },
+      };
+      window.__log.length = 0;
+      const t = document.querySelector('arc-reader-ui').shadowRoot.querySelector('.timeline');
+      t.scrollTop = t.scrollHeight;
+      return true;
+    })()`);
+    await sleep(250);
+
+    const exportBtn = await cdp.eval(`(() => {
+      const sr = document.querySelector('arc-reader-ui').shadowRoot;
+      const list = [...sr.querySelectorAll('[data-act="export-turn"]')];
+      const b = list[list.length - 1];
+      if (!b) return null;
+      const r = b.getBoundingClientRect();
+      return { x: r.left + r.width / 2, y: r.top + r.height / 2 };
+    })()`);
+    check('回答的操作行里有「导出」按钮', !!exportBtn);
+    if (!exportBtn) throw new Error('找不到导出按钮，后面的导出断言没法做');
+
+    await cdp.clickAt(exportBtn.x, exportBtn.y);
+    await sleep(350);
+
+    const menu = await cdp.eval(`(() => {
+      const m = document.querySelector('arc-reader-ui').shadowRoot.querySelector('.export-menu');
+      if (!m) return null;
+      const r = m.getBoundingClientRect();
+      const items = [...m.querySelectorAll('.export-item')];
+      return {
+        items: items.map((i) => i.textContent),
+        targets: items.map((i) => i.dataset.export),
+        top: r.top, bottom: r.bottom, left: r.left, right: r.right,
+        vw: window.innerWidth, vh: window.innerHeight,
+      };
+    })()`);
+    check('点击后弹出导出菜单', !!menu);
+    check(
+      '菜单含三个目标：Obsidian / Notion / 复制 Markdown',
+      menu && menu.targets.join(',') === 'obsidian,notion,clipboard',
+      `实际：${JSON.stringify(menu?.targets)}`
+    );
+    check(
+      '菜单里显示 Obsidian 库名（用户能确认写进哪个库）',
+      !!menu && menu.items[0].includes('我的笔记库'),
+      `实际：${menu?.items?.[0]}`
+    );
+    check(
+      'Notion 未配置时如实标注，不假装可用',
+      !!menu && menu.items[1].includes('未配置'),
+      `实际：${menu?.items?.[1]}`
+    );
+    check(
+      '菜单完整落在视口内（不会贴边被裁掉）',
+      !!menu && menu.top >= 0 && menu.bottom <= menu.vh && menu.left >= 0 && menu.right <= menu.vw,
+      menu ? `top=${menu.top} bottom=${menu.bottom} vh=${menu.vh}` : ''
+    );
+
+    // 点「保存到 Obsidian」：应当带着这一轮的完整答案发给 service worker
+    const obsidianItem = await cdp.eval(`(() => {
+      const it = document.querySelector('arc-reader-ui').shadowRoot
+        .querySelector('.export-menu [data-export="obsidian"]');
+      if (!it) return null;
+      const r = it.getBoundingClientRect();
+      return { x: r.left + r.width / 2, y: r.top + r.height / 2 };
+    })()`);
+    await cdp.clickAt(obsidianItem.x, obsidianItem.y);
+    await sleep(450);
+
+    const menuGone = await cdp.eval(
+      '!!document.querySelector("arc-reader-ui").shadowRoot.querySelector(".export-menu")'
+    );
+    check('菜单执行后自动收起', menuGone === false);
+
+    const logSave = await cdp.eval('window.__log.slice(-8)');
+    const saveCall = logSave.find((l) => l.includes('export:save'));
+    check('点 Obsidian 后发出了 export:save', !!saveCall, `日志：${JSON.stringify(logSave.slice(-2))}`);
+    check('target 与菜单项一致', !!saveCall && saveCall.includes('"target":"obsidian"'));
+    check(
+      'payload 带上了整轮答案，而不是空壳记录',
+      !!saveCall && /"answer":"[^"]{5,}"/.test(saveCall),
+      '导出的记录里没有答案内容，用户在笔记里会看到空条目'
+    );
+
+    // 再开一次，点「复制为 Markdown」——应改走 export:markdown（与导出到笔记平台同源）
+    await cdp.eval('window.__log.length = 0');
+    await cdp.clickAt(exportBtn.x, exportBtn.y);
+    await sleep(320);
+    const copyItem = await cdp.eval(`(() => {
+      const it = document.querySelector('arc-reader-ui').shadowRoot
+        .querySelector('.export-menu [data-export="clipboard"]');
+      if (!it) return null;
+      const r = it.getBoundingClientRect();
+      return { x: r.left + r.width / 2, y: r.top + r.height / 2 };
+    })()`);
+    check('二次打开菜单仍然可用', !!copyItem);
+    if (copyItem) {
+      await cdp.clickAt(copyItem.x, copyItem.y);
+      await sleep(320);
+      const logCopy = await cdp.eval('window.__log.slice(-6)');
+      check(
+        '「复制为 Markdown」走 export:markdown，格式与导出到笔记平台同源',
+        logCopy.some((l) => l.includes('export:markdown')),
+        `日志：${JSON.stringify(logCopy.slice(-2))}`
+      );
+    }
   } finally {
     await close();
   }

@@ -18,6 +18,21 @@ import { fileURLToPath } from 'node:url';
 import { buildEndpoint, originPatternOf } from '../lib/llm.js';
 import { buildMessages, buildRequest, MODES, LAYER_MARKER, splitLayered, createLayerSplitter, TOTAL_CHAR_BUDGET, RECENT_TURNS_FULL, HISTORY_SUMMARY_TITLE } from '../lib/prompts.js';
 import { recordId, toMarkdown, domainOf } from '../lib/store.js';
+import {
+  splitRichText,
+  buildSingleMarkdown,
+  markdownFileName,
+  sanitizeName,
+  obsidianUri,
+  obsidianFilePath,
+  recordsToBlocks,
+  chunkBlocks,
+  notionPagePayload,
+  normalizeNotionId,
+  looksLikeNotionId,
+  notionErrorMessage,
+  notionTitleOf,
+} from '../lib/exporters.js';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const root = path.resolve(here, '..');
@@ -878,6 +893,207 @@ test('content.js 捕获划词锚点，且每一处 startTurn 都带上它', () =
   const at = contentSrc.indexOf('function gotoAnchor(');
   const body = contentSrc.slice(at, contentSrc.indexOf('function flashAnchorHighlight('));
   assert.ok(body.includes('document.contains'), 'gotoAnchor 没有校验锚点是否仍连接在文档里');
+});
+
+/* ------------------------------------------------------------------ */
+/* 10. 导出到第三方笔记                                                 */
+/* ------------------------------------------------------------------ */
+
+console.log('\n[10] 导出到第三方笔记（lib/exporters.js）');
+
+const sampleRecord = {
+  id: 'r1',
+  ts: Date.UTC(2026, 8, 20, 1, 45),
+  url: 'https://example.com/notes?q=1&x=2',
+  title: '注意力机制笔记',
+  domain: 'example.com',
+  selection: '注意力机制（Attention）让模型回头看一眼全部输入。',
+  mode: 'explain',
+  question: '这段说的方法和循环网络有什么差别？',
+  answer: '它不再把历史压进定长向量，而是每次重新分配关注度。',
+  detail: '展开细节：\n\nQ/K/V 三个角色各司其职。',
+  model: 'deepseek-chat',
+};
+
+test('rich_text 切分无损：拼回来必须逐字符等于原文', () => {
+  const text = `${'A'.repeat(1500)}\n\n${'中'.repeat(3000)}\n${`tail-${'x'.repeat(800)}`}`;
+  const parts = splitRichText(text, 2000);
+  assert.ok(parts.length > 1, '这么长的文本应当被切开');
+  assert.equal(parts.join(''), text, '切分丢了字符 —— 笔记里会静默缺内容，这种 bug 没人会报出来');
+});
+
+test('rich_text 每片都不超过 Notion 的 2000 字上限', () => {
+  const text = '句子。'.repeat(3000);
+  const parts = splitRichText(text, 2000);
+  for (const p of parts) assert.ok(p.length <= 2000, `出现超长片段：${p.length}`);
+  assert.equal(parts.join(''), text);
+});
+
+test('Notion 的硬约束全被守住：单块 ≤2000 字、单批 ≤100 块', () => {
+  // 一条记录约 8 个顶层块，20 条正好越过 100 的上限，能真正测到分批
+  const many = Array.from({ length: 20 }, (_, i) => ({
+    ...sampleRecord,
+    id: `r${i}`,
+    answer: '答'.repeat(4500),
+    detail: '细'.repeat(5000),
+  }));
+  const blocks = recordsToBlocks(many);
+
+  const walk = (list) => {
+    for (const b of list) {
+      const payload = b[b.type];
+      for (const rt of payload?.rich_text || []) {
+        assert.ok(
+          rt.text.content.length <= 2000,
+          `rich_text 有 ${rt.text.content.length} 字，Notion 会整个请求 400`
+        );
+      }
+      if (payload?.children) walk(payload.children);
+    }
+  };
+  walk(blocks);
+
+  const batches = chunkBlocks(blocks);
+  for (const b of batches) assert.ok(b.length <= 100, `单批 ${b.length} 块，超过上限`);
+  assert.ok(batches.length > 1, `20 条应产生多批，实际只有 ${batches.length} 批（共 ${blocks.length} 块）`);
+  assert.equal(batches.flat().length, blocks.length, '分批过程丢了块');
+});
+
+test('blocks 结构对齐面板：标题层 / 来源链接 / 引用 / 展开折叠 / 分隔线', () => {
+  const blocks = recordsToBlocks([sampleRecord]);
+  assert.equal(blocks[0].type, 'heading_2');
+  assert.ok(blocks[0].heading_2.rich_text[0].text.content.includes('解释'), '标题里应当有模式名');
+
+  const linkText = blocks
+    .filter((b) => b.type === 'paragraph')
+    .flatMap((b) => b.paragraph.rich_text)
+    .find((t) => t.text.link);
+  assert.ok(linkText, '缺少带链接的来源段');
+  assert.equal(linkText.text.link.url, sampleRecord.url);
+
+  assert.ok(blocks.some((b) => b.type === 'quote'), '选中内容应当是引用块');
+  const toggle = blocks.find((b) => b.type === 'toggle');
+  assert.ok(toggle, '展开层应当是 toggle —— 笔记里也保持收着');
+  assert.ok(toggle.toggle.children.length >= 1, 'toggle 里没装展开层内容');
+  assert.equal(blocks[blocks.length - 1].type, 'divider');
+});
+
+test('单条 Markdown：带 front-matter，展开层不丢', () => {
+  const md = buildSingleMarkdown(sampleRecord);
+  assert.ok(md.startsWith('---\n'), '缺少 front-matter');
+  assert.ok(md.includes('source: "https://example.com/notes?q=1&x=2"'), 'front-matter 应带原文链接');
+  assert.ok(md.includes('tags:\n  - ai-reader'), 'front-matter 应有标签，方便按来源筛');
+  assert.ok(md.includes('## 选中内容') && md.includes('## 回答') && md.includes('## 展开'));
+  assert.ok(md.includes('> 注意力机制'), '选中内容应当是引用块');
+  assert.ok(md.includes('deepseek-chat'));
+});
+
+test('Obsidian URI：正文里的 & # 换行都被编码，不会把参数劈成两半', () => {
+  const uri = obsidianUri({ vault: '我的库', file: 'AI 阅读助手/笔记.md', content: 'a&b#c\nd' });
+  assert.ok(uri.startsWith('obsidian://new?'), `URI 协议头不对：${uri.slice(0, 40)}`);
+  assert.ok(uri.includes(`vault=${encodeURIComponent('我的库')}`), 'vault 没被编码');
+  assert.ok(!uri.includes('a&b'), '正文里的 & 没编码 —— 参数会被劈开，内容静默截断');
+  assert.ok(uri.includes(encodeURIComponent('a&b#c\nd')), '正文没有按 URI 组件编码');
+});
+
+test('Obsidian URI：剪贴板模式不重复内联正文', () => {
+  const uri = obsidianUri({ file: 'x', content: 'should-be-ignored', clipboard: true });
+  assert.ok(uri.includes('clipboard=true'));
+  assert.ok(!uri.includes('should-be-ignored'), '剪贴板模式下仍内联正文，URI 白白变长');
+});
+
+test('Obsidian 路径拼接：文件夹留空不留多余斜杠', () => {
+  assert.equal(obsidianFilePath('', 'a.md'), 'a.md');
+  assert.equal(obsidianFilePath('/AI 阅读助手/', 'a.md'), 'AI 阅读助手/a.md');
+});
+
+test('文件名不携带路径分隔符（否则笔记会跑到别的地方去）', () => {
+  const name = markdownFileName({ ...sampleRecord, selection: 'a/b:c*d?e"f<g>h|i#j^k[l]m' });
+  assert.ok(!/[\\/:*?"<>|#^[\]]/.test(name), `文件名仍有非法字符：${name}`);
+  assert.ok(name.length <= 90, `文件名过长：${name.length}`);
+  assert.equal(sanitizeName('   '), '未命名');
+});
+
+test('Notion ID：整条链接粘进来也能提取（含 ?pvs= 参数与连字符形式）', () => {
+  const url = 'https://www.notion.so/team/Reading-Notes-1f2e3d4c5b6a7988776655443322110a?pvs=4';
+  assert.equal(normalizeNotionId(url), '1f2e3d4c5b6a7988776655443322110a');
+  assert.equal(
+    normalizeNotionId('1f2e3d4c-5b6a-7988-7766-55443322110a'),
+    '1f2e3d4c5b6a7988776655443322110a'
+  );
+  assert.ok(looksLikeNotionId(url));
+  assert.ok(!looksLikeNotionId('随便打的一串中文'));
+  assert.equal(normalizeNotionId(''), '');
+});
+
+test('Notion 报错翻成人话：401/403/404/429 各给下一步动作', () => {
+  assert.ok(notionErrorMessage(401, {}).includes('令牌'));
+  assert.ok(notionErrorMessage(403, {}).includes('分享'));
+  assert.ok(notionErrorMessage(404, {}).includes('分享'));
+  assert.ok(notionErrorMessage(429, {}).includes('限流'));
+  assert.ok(notionErrorMessage(500, { message: 'boom' }).includes('boom'));
+});
+
+test('新建页面请求体：父 ID 归一化、标题走 properties.title、children 截到 100', () => {
+  const payload = notionPagePayload({
+    parentId: 'https://www.notion.so/x-1f2e3d4c5b6a7988776655443322110a',
+    title: '标题',
+    blocks: new Array(150).fill({ object: 'block', type: 'divider', divider: {} }),
+  });
+  assert.equal(payload.parent.page_id, '1f2e3d4c5b6a7988776655443322110a');
+  assert.equal(payload.properties.title.title[0].text.content, '标题');
+  assert.equal(payload.children.length, 100, '首批必须自己先截断，剩下的交给 PATCH 追加');
+});
+
+test('从 Notion 页面对象里取标题（「连接并测试」的反馈要用）', () => {
+  const page = {
+    properties: {
+      名称: { type: 'title', title: [{ plain_text: '阅读笔记' }] },
+      标签: { type: 'multi_select', multi_select: [] },
+    },
+  };
+  assert.equal(notionTitleOf(page), '阅读笔记');
+  assert.equal(notionTitleOf({}), '(未命名页面)');
+});
+
+test('守卫：内容脚本发起的导出消息，service worker 全都实现了', () => {
+  const used = [...contentSrc.matchAll(/type:\s*'(export:[a-z-]+)'/g)].map((m) => m[1]);
+  assert.ok(used.length >= 3, `content.js 里没找到导出消息（只找到 ${used.length} 个）`);
+  for (const t of new Set(used)) {
+    assert.ok(swSrc.includes(`case '${t}':`), `service worker 没有实现 ${t}`);
+  }
+});
+
+test('守卫：面板菜单的目标名与 service worker 的分派分支对得上', () => {
+  for (const target of ['obsidian', 'notion']) {
+    assert.ok(
+      contentSrc.includes(`['${target}',`),
+      `面板导出菜单缺少 ${target} 项（菜单项 key 必须与 SW 的 target 一致）`
+    );
+    assert.ok(swSrc.includes(`msg.target === '${target}'`), `service worker 不认 target=${target}`);
+    assert.ok(optionsJs.includes(`pushBatchTo('${target}')`), `设置页没有把批量导出接到 ${target}`);
+  }
+  assert.ok(contentSrc.includes('openExportMenu'), '面板没有导出菜单入口');
+  assert.ok(contentSrc.includes("case 'export-turn':"), '导出按钮没有接上点击分支');
+});
+
+test('守卫：设置页的集成输入框与读取代码一一对应', () => {
+  for (const id of ['obsidianVault', 'obsidianFolder', 'notionToken', 'notionParentId']) {
+    assert.ok(optionsHtml.includes(`id="${id}"`), `options.html 缺少 #${id}`);
+    assert.ok(optionsJs.includes(`#${id}`), `options.js 没有引用 #${id}`);
+  }
+  assert.ok(optionsHtml.includes('id="notionConnect"') && optionsJs.includes("'#notionConnect'"));
+  assert.ok(
+    optionsHtml.includes('id="exportObsidianBtn"') && optionsHtml.includes('id="exportNotionBtn"'),
+    '历史面板缺少批量导出按钮'
+  );
+  // Notion 令牌和模型 Key 一样是凭据，不该出现在内容脚本里
+  assert.ok(!contentSrc.includes('notionToken'), '内容脚本不该碰 Notion 令牌');
+});
+
+test('守卫：凭据只走本机存储，不走会同步到所有设备的 sync 通道', () => {
+  assert.ok(storeSrc.includes('notionToken'), 'store 里没有 notionToken 默认值');
+  assert.ok(!/chrome\.storage\.sync/.test(storeSrc), 'store 用了 sync 存储 —— 凭据会同步到所有设备');
 });
 
 /* ------------------------------------------------------------------ */

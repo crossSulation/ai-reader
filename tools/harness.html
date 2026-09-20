@@ -72,7 +72,16 @@ window.chrome = {
         onDisconnect: { addListener(fn) { window.__port.onDisconnect = fn; } },
       };
     },
-    sendMessage: (m) => window.__log.push(`runtime.sendMessage ${JSON.stringify(m)}`),
+    sendMessage: (m) => {
+      window.__log.push(`runtime.sendMessage ${JSON.stringify(m)}`);
+      // 允许测试按消息类型塞返回值（导出状态、导出结果等），没塞就照旧返回 undefined
+      const stub = window.__msgStub || {};
+      const key = m && m.type;
+      if (key && Object.prototype.hasOwnProperty.call(stub, key)) {
+        return Promise.resolve(stub[key]);
+      }
+      return Promise.resolve(undefined);
+    },
     onMessage: { addListener(fn) { window.__runtimeListener = fn; } },
   },
 };

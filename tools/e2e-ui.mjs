@@ -257,6 +257,89 @@ async function main() {
     s = await cdp.eval(PAGE_SNAPSHOT);
     check('测试结果区出现', s.testResult?.shown === true, `display=${s.testResult?.display}`);
     check('保存后未保存提示消失', s.dirtyHint?.shown === false);
+
+    /* ---------------------------------------------------------------- */
+    console.log('\n【7】options · 笔记集成卡片（导出的第二个入口）');
+
+    const integrate = await cdp.eval(`(() => {
+      const visible = (el) => {
+        if (!el) return null;
+        const st = getComputedStyle(el);
+        const r = el.getBoundingClientRect();
+        return st.display !== 'none' && st.visibility !== 'hidden' && r.height > 0;
+      };
+      const fields = {};
+      for (const id of ['obsidianVault', 'obsidianFolder', 'notionToken', 'notionParentId']) {
+        fields[id] = visible(document.getElementById(id));
+      }
+      return {
+        fields,
+        notionConnect: visible(document.getElementById('notionConnect')),
+        obsidianTest: visible(document.getElementById('obsidianTest')),
+        hint: (document.getElementById('integrateNote') || {}).textContent || '',
+      };
+    })()`);
+
+    check(
+      '四个集成输入框都在（库名 / 文件夹 / 令牌 / 父页面）',
+      Object.values(integrate.fields).every((v) => v === true),
+      JSON.stringify(integrate.fields)
+    );
+    check('「连接 Notion 并测试」按钮可见', integrate.notionConnect === true);
+    check('「试写一篇 Obsidian 笔记」按钮可见', integrate.obsidianTest === true);
+    check(
+      '未配置时说明各需要什么',
+      /Obsidian 无需授权/.test(integrate.hint),
+      `文案：${JSON.stringify(integrate.hint)}`
+    );
+
+    // 父页面输入框：粘贴整条链接应当被归一化成裸 ID（否则 Notion API 直接 404）
+    // 这张卡片在页面下方，先滚进视口才点得到
+    await cdp.eval(`document.getElementById('notionParentId').scrollIntoView({ block: 'center' })`);
+    await sleep(300);
+    const parentBox = await cdp.eval(
+      `(() => { const r = document.getElementById('notionParentId').getBoundingClientRect();
+        return { x: r.left + r.width / 2, y: r.top + r.height / 2, inView: r.top > 0 && r.bottom < innerHeight }; })()`
+    );
+    check('父页面输入框已滚进视口（否则点击会落空）', parentBox.inView === true, `top=${parentBox.y}`);
+    await cdp.clickAt(parentBox.x, parentBox.y);
+    await sleep(120);
+    await cdp.send('Input.insertText', {
+      text: 'https://www.notion.so/team/Notes-1f2e3d4c5b6a7988776655443322110a?pvs=4',
+    });
+    await sleep(150);
+    // 真实用户是失焦时触发 change
+    await cdp.eval(
+      `document.getElementById('notionParentId').dispatchEvent(new Event('change', { bubbles: true }))`
+    );
+    await sleep(400);
+    const normalized = await cdp.eval(
+      `document.getElementById('notionParentId').value`
+    );
+    check(
+      '粘贴整条页面链接会被归一化成裸 ID',
+      normalized === '1f2e3d4c5b6a7988776655443322110a',
+      `实际：${JSON.stringify(normalized)} —— 带 URL 的 ID 会被 Notion 判 404`
+    );
+
+    /* ---------------------------------------------------------------- */
+    console.log('\n【8】options · 历史面板的批量导出按钮');
+
+    await cdp.eval(`document.querySelector('.tab[data-tab="history"]').click()`);
+    await sleep(350);
+    const histBtns = await cdp.eval(`(() => {
+      const f = (id) => {
+        const el = document.getElementById(id);
+        if (!el) return null;
+        const st = getComputedStyle(el);
+        const r = el.getBoundingClientRect();
+        return { text: el.textContent, visible: st.display !== 'none' && r.height > 0 && r.width > 0 };
+      };
+      return { obsidian: f('exportObsidianBtn'), notion: f('exportNotionBtn'), md: f('exportBtn') };
+    })()`);
+    check('历史面板出现「发送到 Obsidian」', histBtns.obsidian?.visible === true);
+    check('历史面板出现「发送到 Notion」', histBtns.notion?.visible === true);
+    check('原来的「导出 Markdown」仍在', histBtns.md?.visible === true);
   } finally {
     await close();
     await server.close();

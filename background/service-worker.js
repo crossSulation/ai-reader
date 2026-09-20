@@ -22,6 +22,26 @@ import {
   domainOf,
   toMarkdown,
 } from '../lib/store.js';
+import {
+  NOTION_API,
+  NOTION_VERSION,
+  OBSIDIAN_INLINE_LIMIT,
+  buildSingleMarkdown,
+  markdownFileName,
+  splitRichText,
+  obsidianUri,
+  obsidianFilePath,
+  recordsToBlocks,
+  chunkBlocks,
+  notionPageTitle,
+  notionPagePayload,
+  notionErrorMessage,
+  notionTitleOf,
+  normalizeNotionId,
+  looksLikeNotionId,
+  ymdOf,
+  sanitizeName,
+} from '../lib/exporters.js';
 
 /* ------------------------------------------------------------------ */
 /* 右键菜单                                                            */
@@ -298,6 +318,132 @@ chrome.runtime.onConnect.addListener((port) => {
 });
 
 /* ------------------------------------------------------------------ */
+/* 导出到第三方笔记                                                     */
+/* ------------------------------------------------------------------ */
+
+const NOTION_ORIGIN = 'https://api.notion.com/*';
+/** 分片数硬上限：约 18 万字符，再多就该让用户缩小筛选范围了 */
+const MAX_OBSIDIAN_CHUNKS = 30;
+const idle = (ms) => new Promise((r) => setTimeout(r, ms));
+
+/**
+ * 把内容送进 Obsidian。
+ *
+ * 为什么用 obsidian:// 协议而不是直接写文件：扩展没有文件系统权限，
+ * 而这个协议是 Obsidian 官方提供的唯一自动化入口。
+ *
+ * 分片是必须的 —— 正文要塞进 URI 参数，而系统向协议处理器传 URL 有长度上限，
+ * 超了会被**静默截断**（笔记建出来了、内容少一半，比直接失败更难排查）。
+ * 所以第一片负责新建、其余片带 append=true 追加到同一篇笔记。
+ * 全程只开一个标签页反复导航，避免导出多条时刷出一屏标签。
+ */
+async function exportToObsidian(records) {
+  const s = await getSettings();
+  const single = records.length === 1;
+
+  const name = single
+    ? markdownFileName(records[0])
+    : sanitizeName(`AI 阅读助手 · ${ymdOf(Date.now())}`, 60);
+  const content = single ? buildSingleMarkdown(records[0]) : toMarkdown(records);
+
+  const chunks = splitRichText(content, OBSIDIAN_INLINE_LIMIT);
+  if (chunks.length > MAX_OBSIDIAN_CHUNKS) {
+    return {
+      ok: false,
+      error: `内容太长（约 ${content.length} 字符，需分 ${chunks.length} 次写入）。请缩小筛选范围，或改用「下载 .md 文件」。`,
+    };
+  }
+
+  const file = obsidianFilePath(s.obsidianFolder, name);
+  let tabId = null;
+  for (let i = 0; i < chunks.length; i++) {
+    const url = obsidianUri({
+      vault: s.obsidianVault,
+      file,
+      content: chunks[i],
+      append: i > 0,
+    });
+    if (i > 0) await idle(220); // Obsidian 处理上一次协议调用需要时间，连发会丢内容
+    if (tabId) await chrome.tabs.update(tabId, { url });
+    else tabId = (await chrome.tabs.create({ url }))?.id ?? null;
+  }
+  return { ok: true, target: 'obsidian', file, chunks: chunks.length };
+}
+
+async function notionFetch(path, token, init = {}) {
+  const res = await fetch(`${NOTION_API}${path}`, {
+    ...init,
+    headers: {
+      Authorization: `Bearer ${token}`,
+      'Notion-Version': NOTION_VERSION,
+      'Content-Type': 'application/json',
+      ...(init.headers || {}),
+    },
+  });
+  let data = null;
+  try {
+    data = await res.json();
+  } catch {
+    /* 空响应体 */
+  }
+  if (!res.ok) throw new Error(notionErrorMessage(res.status, data));
+  return data;
+}
+
+/**
+ * 把记录写成一个新的 Notion 子页面。
+ *
+ * 内容结构由 lib/exporters.js 转成 blocks；这里负责三件 API 层面的事：
+ * 先建页面（带上首批 blocks）、剩余批次用 PATCH 追加（单请求上限 100 块）、
+ * 批间留间隔（每个集成限速 3 请求/秒，429 会更好睡）。
+ */
+async function exportToNotion(records) {
+  const s = await getSettings();
+  if (!s.notionToken) throw new Error('还没填 Notion 集成令牌，请先到设置页「笔记集成」里配置');
+  if (!looksLikeNotionId(s.notionParentId)) {
+    throw new Error('Notion 父页面 ID 看起来不对，请回设置页检查（可直接粘贴页面链接）');
+  }
+  if (!(await chrome.permissions.contains({ origins: [NOTION_ORIGIN] }))) {
+    throw new Error('还没授权访问 Notion，请到设置页「笔记集成」点一次「连接并测试」');
+  }
+
+  const title = notionPageTitle(records);
+  const batches = chunkBlocks(recordsToBlocks(records));
+  const [first, ...rest] = batches;
+
+  const page = await notionFetch('/pages', s.notionToken, {
+    method: 'POST',
+    body: JSON.stringify(notionPagePayload({ parentId: s.notionParentId, title, blocks: first })),
+  });
+
+  for (const batch of rest) {
+    await idle(350);
+    await notionFetch(`/blocks/${page.id}/children`, s.notionToken, {
+      method: 'PATCH',
+      body: JSON.stringify({ children: batch }),
+    });
+  }
+
+  return { ok: true, target: 'notion', url: page.url, pageId: page.id, batches: batches.length };
+}
+
+/** 导出目标当前是否可用（不回传任何凭据，只回状态） */
+async function exportStatus() {
+  const s = await getSettings();
+  const granted = await chrome.permissions.contains({ origins: [NOTION_ORIGIN] });
+  const notionConfigured = !!(s.notionToken && looksLikeNotionId(s.notionParentId));
+  return {
+    ok: true,
+    obsidian: { vault: s.obsidianVault || '', folder: s.obsidianFolder || '' },
+    notion: {
+      configured: notionConfigured,
+      granted,
+      ready: notionConfigured && granted,
+    },
+  };
+}
+
+/* ------------------------------------------------------------------ */
 /* 一次性消息                                                          */
 /* ------------------------------------------------------------------ */
 
@@ -368,6 +514,63 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
         case 'history:export': {
           const records = Array.isArray(msg.records) ? msg.records : await getHistory();
           sendResponse({ ok: true, markdown: toMarkdown(records, { title: msg.title }) });
+          return;
+        }
+
+        // 面板上「复制为 Markdown」用：格式与导出到笔记平台的完全一致
+        case 'export:markdown': {
+          const records = Array.isArray(msg.records) ? msg.records : [];
+          if (!records.length) {
+            sendResponse({ ok: false, error: '没有可导出的记录' });
+            return;
+          }
+          sendResponse({
+            ok: true,
+            markdown: records.length === 1 ? buildSingleMarkdown(records[0]) : toMarkdown(records),
+          });
+          return;
+        }
+
+        case 'export:status':
+          sendResponse(await exportStatus());
+          return;
+
+        case 'export:save': {
+          const records = Array.isArray(msg.records) ? msg.records : [];
+          if (!records.length) {
+            sendResponse({ ok: false, error: '没有可导出的记录' });
+            return;
+          }
+          if (msg.target === 'obsidian') sendResponse(await exportToObsidian(records));
+          else if (msg.target === 'notion') sendResponse(await exportToNotion(records));
+          else sendResponse({ ok: false, error: `不支持的导出目标：${msg.target}` });
+          return;
+        }
+
+        /**
+         * 「连接并测试」的服务端一半：令牌有效 + 父页面已分享给集成。
+         *
+         * 两步分开测是有意的 —— 这两种失败在 Notion 那边是 401 和 404，
+         * 但用户看到的都是「导出失败」，分不清该改令牌还是该去分享页面。
+         */
+        case 'export:test-notion': {
+          const s = await getSettings();
+          const token = msg.token || s.notionToken;
+          const parentId = normalizeNotionId(msg.parentId || s.notionParentId);
+          if (!token) throw new Error('还没填写 Notion 集成令牌');
+          if (!looksLikeNotionId(parentId)) {
+            throw new Error('父页面 ID 看起来不对，请粘贴页面链接或 32 位页面 ID');
+          }
+          if (!(await chrome.permissions.contains({ origins: [NOTION_ORIGIN] }))) {
+            throw new Error('尚未授权访问 api.notion.com，请重试并在弹窗里允许');
+          }
+          const me = await notionFetch('/users/me', token);
+          const parent = await notionFetch(`/pages/${parentId}`, token);
+          sendResponse({
+            ok: true,
+            botName: me?.name || me?.bot?.workspace_name || '集成',
+            parentTitle: notionTitleOf(parent),
+          });
           return;
         }
 

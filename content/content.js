@@ -626,6 +626,38 @@
 .mini-btn:hover { background: rgba(15, 23, 42, 0.06); color: #334155; }
 .mini-btn.on { color: #d97706; }
 
+/* ---------- 导出到笔记平台的浮动菜单 ---------- */
+.export-menu {
+  position: fixed;
+  z-index: 2147483647;
+  /* 宿主元素是 pointer-events:none（不然整页都点不动），子元素必须自己打开，
+     否则菜单画得出来却点不到 —— 点击会直接穿透到下面的时间线 */
+  pointer-events: auto;
+  min-width: 172px;
+  padding: 4px;
+  border-radius: 10px;
+  background: #ffffff;
+  border: 1px solid rgba(15, 23, 42, 0.1);
+  box-shadow: 0 10px 26px rgba(15, 23, 42, 0.16);
+  font-size: 12px;
+  animation: moreIn 0.12s ease-out;
+}
+.export-item {
+  all: unset;
+  display: flex; align-items: center; justify-content: space-between; gap: 8px;
+  width: 100%;
+  box-sizing: border-box;
+  padding: 7px 9px;
+  border-radius: 7px;
+  color: #334155;
+  cursor: pointer;
+  white-space: nowrap;
+}
+.export-item:hover { background: rgba(99, 102, 241, 0.09); color: #4338ca; }
+.export-item[aria-disabled='true'] { color: #b6bcc6; cursor: not-allowed; }
+.export-item[aria-disabled='true']:hover { background: none; color: #b6bcc6; }
+.export-item .export-note { color: #97a0ad; font-size: 11px; }
+
 .caret {
   display: inline-block;
   width: 6px; height: 14px;
@@ -840,6 +872,16 @@
   .mini-btn { color: #8b93a1; }
   .mini-btn:hover { background: rgba(255, 255, 255, 0.08); color: #cbd5e1; }
   .mini-btn.on { color: #fbbf24; }
+  .export-menu {
+    background: #1e2330;
+    border-color: rgba(255, 255, 255, 0.12);
+    box-shadow: 0 12px 30px rgba(0, 0, 0, 0.5);
+  }
+  .export-item { color: #cbd5e1; }
+  .export-item:hover { background: rgba(129, 140, 248, 0.16); color: #c7d2fe; }
+  .export-item[aria-disabled='true'] { color: #5b6472; }
+  .export-item[aria-disabled='true']:hover { background: none; color: #5b6472; }
+  .export-item .export-note { color: #6f7784; }
   .more-btn { color: #a5b4fc; background: rgba(129, 140, 248, 0.12); }
   .more-btn:hover { background: rgba(129, 140, 248, 0.2); }
   .more-hint { color: #6f7784; }
@@ -1237,6 +1279,14 @@
     copyBtn.textContent = '复制';
     actions.appendChild(copyBtn);
 
+    const exportBtn = document.createElement('button');
+    exportBtn.className = 'mini-btn';
+    exportBtn.dataset.act = 'export-turn';
+    exportBtn.dataset.id = turn.id;
+    exportBtn.textContent = '导出';
+    exportBtn.title = '存到 Obsidian / Notion，或复制为 Markdown';
+    actions.appendChild(exportBtn);
+
     const starBtn = document.createElement('button');
     starBtn.className = `mini-btn${turn.favorite ? ' on' : ''}`;
     starBtn.dataset.act = 'star-turn';
@@ -1333,6 +1383,8 @@
     if (nearBottom) scrollTimelineToBottom();
     updateMiniBadge();
     syncPanelState();
+    // 重建后按钮都是新元素了，开着的导出菜单要跟着重新定位
+    repositionExportMenu();
   }
 
   /** 流式增量：只重绘最后一条回答，避免整棵树重建导致的滚动跳动 */
@@ -1760,6 +1812,173 @@
     }
   }
 
+  /* ================================================================
+   * 导出到第三方笔记（Obsidian / Notion）
+   * ================================================================ */
+
+  /** 当前打开的导出菜单（同时只允许一个） */
+  let exportMenu = null;
+
+  function closeExportMenu() {
+    if (exportMenu) {
+      exportMenu.remove();
+      exportMenu = null;
+    }
+  }
+
+  /** 贴着眼按钮放：下方放不下就翻到上方，左右不出视口 */
+  function placeExportMenu(menu, anchor) {
+    const r = anchor.getBoundingClientRect();
+    const mw = menu.offsetWidth;
+    const mh = menu.offsetHeight;
+    const left = Math.max(8, Math.min(r.left, window.innerWidth - mw - 8));
+    let top = r.bottom + 6;
+    if (top + mh > window.innerHeight - 8) top = Math.max(8, r.top - mh - 6);
+    menu.style.left = `${left}px`;
+    menu.style.top = `${top}px`;
+  }
+
+  /**
+   * 流式期间 timeline 会反复重绘，锚点按钮每次都是新元素。
+   * 与其把菜单关掉（用户刚点开就消失，像是点错了），不如跟着新按钮重新定位。
+   */
+  function repositionExportMenu() {
+    if (!exportMenu || !els) return;
+    const anchor = els.timeline.querySelector(
+      `[data-act="export-turn"][data-id="${exportMenu.dataset.turn}"]`
+    );
+    if (!anchor) {
+      closeExportMenu();
+      return;
+    }
+    placeExportMenu(exportMenu, anchor);
+  }
+
+  /**
+   * 把这一轮整理成与历史记录同构的对象。
+   *
+   * 格式化（Markdown / Notion blocks）一律交给 service worker 里的
+   * lib/exporters.js：内容脚本不是 ESM 环境，import 不到那套逻辑，
+   * 要是在这里另写一份，两边迟早会漂移出两种「正确答案」。
+   */
+  function turnAsRecord(turn) {
+    return {
+      ts: turn.ts || Date.now(),
+      url: session?.page?.url || location.href,
+      title: session?.page?.title || document.title,
+      selection: turn.selection || '',
+      context: turn.context || '',
+      mode: turn.mode || 'explain',
+      question: turn.question || '',
+      answer: turn.answer || '',
+      detail: turn.detail || '',
+      model: turn.model || '',
+      favorite: !!turn.favorite,
+    };
+  }
+
+  async function pushTurnToPlatform(target, turn) {
+    flashStatus(target === 'obsidian' ? '正在写入 Obsidian…' : '正在保存到 Notion…');
+    try {
+      const res = await chrome.runtime.sendMessage({
+        type: 'export:save',
+        target,
+        records: [turnAsRecord(turn)],
+      });
+      if (!res?.ok) {
+        flashStatus(res?.error || '导出失败');
+        return;
+      }
+      if (res.target === 'obsidian') {
+        flashStatus(res.chunks > 1 ? `已写入 ${res.file}（分 ${res.chunks} 段）` : `已写入 ${res.file}`);
+      } else {
+        flashStatus('已保存到 Notion');
+      }
+    } catch (err) {
+      flashStatus(`导出失败：${err?.message || err}`);
+    }
+  }
+
+  async function copyTurnAsMarkdown(turn) {
+    try {
+      const res = await chrome.runtime.sendMessage({
+        type: 'export:markdown',
+        records: [turnAsRecord(turn)],
+      });
+      if (!res?.ok) {
+        flashStatus(res?.error || '生成 Markdown 失败');
+        return;
+      }
+      const ok = await writeClipboard(res.markdown);
+      flashStatus(ok ? '已复制 Markdown' : '复制失败，请手动选中复制');
+    } catch (err) {
+      flashStatus(`复制失败：${err?.message || err}`);
+    }
+  }
+
+  /**
+   * 打开导出菜单。
+   *
+   * 挂在 shadow root 而不是 timeline 里 —— 流式期间 timeline 每次重绘都会清空，
+   * 挂在里面会被顺手删掉。定位在按钮下方，贴近视口底部时自动翻到上方。
+   */
+  async function openExportMenu(turnId, anchor) {
+    closeExportMenu();
+    const turn = session?.turns.find((t) => t.id === turnId);
+    if (!turn?.answer) return;
+
+    const status = await chrome.runtime.sendMessage({ type: 'export:status' }).catch(() => null);
+    const notionReady = !!status?.notion?.ready;
+    const notionConfigured = !!status?.notion?.configured;
+
+    const menu = document.createElement('div');
+    menu.className = 'export-menu';
+    menu.dataset.turn = turnId;
+
+    const entries = [
+      ['obsidian', '保存到 Obsidian', status?.obsidian?.vault || '最近打开的库'],
+      ['notion', '保存到 Notion', notionReady ? '' : notionConfigured ? '待授权' : '未配置'],
+      ['clipboard', '复制为 Markdown', ''],
+    ];
+    for (const [key, label, note] of entries) {
+      const item = document.createElement('button');
+      item.className = 'export-item';
+      item.dataset.export = key;
+      item.textContent = label;
+      if (key === 'notion' && !notionReady) item.setAttribute('aria-disabled', 'true');
+      if (note) {
+        const tip = document.createElement('span');
+        tip.className = 'export-note';
+        tip.textContent = note;
+        item.appendChild(tip);
+      }
+      menu.appendChild(item);
+    }
+
+    els.panel.getRootNode().appendChild(menu);
+    exportMenu = menu;
+    placeExportMenu(menu, anchor);
+
+    menu.addEventListener('click', async (e) => {
+      const item = e.target.closest?.('.export-item');
+      if (!item) return;
+      e.stopPropagation();
+      const key = item.dataset.export;
+      closeExportMenu();
+
+      if (key === 'clipboard') {
+        await copyTurnAsMarkdown(turn);
+        return;
+      }
+      if (key === 'notion' && !notionReady) {
+        flashStatus(notionConfigured ? '先去设置页授权 Notion' : '先在设置页配置 Notion');
+        chrome.runtime.sendMessage({ type: 'ui:open-options' });
+        return;
+      }
+      await pushTurnToPlatform(key, turn);
+    });
+  }
+
   function flashStatus(text) {
     if (!els) return;
     const prev = els.status.textContent;
@@ -1827,7 +2046,13 @@
       }
 
       const btn = e.target.closest?.('[data-act]');
-      if (!btn) return;
+      if (!btn) {
+        // 点面板空白处也算「我不想选导出目标了」
+        closeExportMenu();
+        return;
+      }
+      // 除「导出」按钮自己外，点任何动作都先收起菜单
+      if (btn.dataset.act !== 'export-turn') closeExportMenu();
 
       switch (btn.dataset.act) {
         case 'close':
@@ -1848,6 +2073,13 @@
         case 'copy-turn':
           copyTurn(btn.dataset.id);
           break;
+        case 'export-turn': {
+          // 再点一次同一个按钮 = 收起（其它情况都是「先关再开」）
+          const opened = exportMenu?.dataset.turn === btn.dataset.id;
+          closeExportMenu();
+          if (!opened) openExportMenu(btn.dataset.id, btn);
+          break;
+        }
         case 'star-turn':
           starTurn(btn.dataset.id);
           break;

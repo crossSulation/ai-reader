@@ -49,8 +49,9 @@
 也可以填本地 Ollama / LM Studio 的地址，数据完全不出本机。
 
 【记录与导出】
-每次问答自动存档（可关闭），按页面归档，可搜索、筛选、收藏，一键导出成 Markdown 笔记，
-在 Obsidian / Typora 里直接就能当读书笔记用。
+每次问答自动存档（可关闭），按页面归档，可搜索、筛选、收藏。支持一键存进你自己的笔记库：
+Obsidian（不需要装插件，填个库名就能用）或 Notion（用你自己的集成令牌写入你自己的页面），
+也可以导出成 Markdown 文件。单条顺手存，也能把整批记录一次性推过去。
 
 【隐私】
 不提问就不会有任何内容离开你的浏览器；只在你主动划词提问时，选中的文字、所在段落和页面
@@ -82,7 +83,9 @@ own API key (DeepSeek, Moonshot/Kimi, OpenAI, Anthropic, or any OpenAI-compatibl
 endpoint — including local Ollama / LM Studio) and requests go straight from your browser
 to the provider you chose. Your key never leaves your machine.
 
-Q&A history is stored locally, searchable, and exportable as Markdown notes.
+Q&A history is stored locally, searchable, and exportable. Send any answer straight to
+your own Obsidian vault (no plugin needed) or your own Notion workspace (with your own
+integration token), or export the whole archive as Markdown.
 
 Open source: https://github.com/crossSulation/ai-reader
 ```
@@ -101,6 +104,7 @@ Open source: https://github.com/crossSulation/ai-reader
 | `downloads` | 用户在设置页点「导出 Markdown」时，把本地问答记录另存为 .md 文件。 |
 | 内容脚本注入网页（`http/https/file`） | 唯一目的是读取用户**主动选中**的那段文字及其所在段落，用于提问；同时用于在选区旁渲染浮出按钮与右侧面板。扩展不会自动读取、上传或分析页面内容，只有用户划词并触发提问时才会发送数据。若不注入所有站点，则用户在任意网站都无法使用划词功能，这是本扩展的唯一功能。 |
 | 可选站点权限（按需申请） | 仅向用户自己在设置页填写的那个接口域名申请联网权限（如 `https://api.deepseek.com/*`）。扩展不申请全站联网权限，也不访问用户填写的域名之外的任何地址。 |
+| `https://api.notion.com/*`（可选，按需申请） | 用户可选的「导出到 Notion」功能：把问答写入**用户自己的** Notion 工作区，用的是用户自己创建的集成令牌。该权限**只在用户点击设置页「连接 Notion 并测试」时申请**；没有配置 Notion 的用户永远不会遇到这个请求，扩展也不会向 Notion 发起任何请求。 |
 
 如审核问到「为什么不用 `activeTab`」：本扩展需要在**用户划词的那一刻**立即读取选区，
 而 `activeTab` 只在点击扩展图标/右键菜单后才授予访问权，双击选词与快捷键路径都拿不到，
@@ -110,8 +114,8 @@ Open source: https://github.com/crossSulation/ai-reader
 
 ```
 本扩展只有一个用途：让用户在阅读网页时，把选中的文字交给用户自己配置的大语言模型，
-并把回答展示在页面右侧。所有功能（解释、翻译、举例、深入、总结、追问、记录、导出）
-都是这一个用途的组成部分。
+并把回答展示在页面右侧。所有功能（解释、翻译、举例、深入、总结、追问、记录，
+以及把结果导出到用户自己的笔记库）都是这一个用途的组成部分。
 ```
 
 ## 四、数据使用声明（Chrome「Data usage」表单 / Edge「Certify your data usage practices」）
@@ -130,6 +134,14 @@ Chrome 会先问「你的扩展是否会收集或使用用户数据」，**必�
 | 数据传输是否加密？ | **Yes**（仅 HTTPS；若用户填 `http://localhost` 的本地模型则不出本机） |
 | 隐私政策 URL | 见上文（必填） |
 | 远程代码 | **不使用远程代码**（所有代码在安装包内，无 CDN、无 eval） |
+
+**关于「导出到笔记平台」这条数据流向**（审核可能追问，主动写进备注更省事）：
+
+- 该功能**默认关闭且需用户自行配置**（填 Notion 集成令牌 + 父页面）；
+- 只在用户点击「导出」时触发，无后台自动同步；
+- 数据直接写入**用户自己的** Notion 工作区，走 Notion 官方 API，**不经过开发者服务器**（本扩展无服务端）；
+- Obsidian 路径通过 `obsidian://` 交给本机应用，内容不出本机；
+- 开发者无法访问这些数据。
 
 ## 五、审核测试说明（Chrome「Notes for certification」/ Edge「Notes for certification」）
 
