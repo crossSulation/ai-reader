@@ -36,7 +36,8 @@ for (const type of ['mousedown', 'mouseup', 'click']) {
 
 /* chrome.* 桩：content script 需要的几个能力。
    设置可以用查询参数覆盖，方便一个页面覆盖多种交互配置：
-     ?trigger=off&dblclick=0&layered=0 */
+     ?trigger=off&dblclick=0&layered=0&uilang=en
+   uilang=auto（默认）时会去问 chrome.i18n.getUILanguage()，用 lang 参数模拟浏览器语言 */
 const qs = new URLSearchParams(location.search);
 window.__settings = {
   trigger: qs.get('trigger') || 'chip',
@@ -48,6 +49,7 @@ window.__settings = {
   dblclickAsk: qs.get('dblclick') !== '0',
   quickAskMode: qs.get('quickask') || 'explain',
   layered: qs.get('layered') !== '0',
+  language: qs.get('uilang') || 'auto',
 };
 
 window.__port = { posted: [], onMessage: null, onDisconnect: null, disconnect() {} };
@@ -57,6 +59,8 @@ window.__emit = (msg) => {
   if (window.__port.onMessage) window.__port.onMessage(msg);
 };
 window.chrome = {
+  // 浏览器界面语言：正常由 Chrome 提供，这里用 ?lang= 模拟，默认中文
+  i18n: { getUILanguage: () => qs.get('lang') || 'zh-CN' },
   storage: {
     local: {
       get: () => Promise.resolve({ arc_settings: window.__settings }),
@@ -86,6 +90,9 @@ window.chrome = {
   },
 };
 </script>
+<!-- 字典必须排在 content.js 之前：它把 t() 挂到 globalThis，后者同步取词。
+     这与 manifest 的 content_scripts 顺序一致，别调换。 -->
+<script src="../lib/i18n.core.js"></script>
 <script src="../content/content.js"></script>
 </body>
 </html>

@@ -8,20 +8,36 @@
 
 | 字段 | Chrome | Edge | 填写内容 |
 |---|---|---|---|
-| 名称 Name | ≤ 45 字符 | ≤ 50 字符 | `AI 阅读助手 · 划词即问`（取自 manifest，14 字符） |
-| 短描述 Summary | ≤ 132 字符 | — | 见下方「短描述」（取自 manifest，67 字符） |
-| 详细描述 Description | ≤ 16 000 字符 | 250 ~ 5 000 字符 | 见下方「详细描述（中文）」 |
+| 名称 Name | ≤ 45 字符 | ≤ 50 字符 | 取自 manifest：中文 `AI 阅读助手 · 划词即问`（14 字符）/ 英文 `AI Reader · Select to Ask`（25 字符）。**会按语言自动取对应的值，不用手填** |
+| 短描述 Summary | ≤ 132 字符 | — | 见下方「短描述」（取自 manifest，中文 67 字符 / 英文 126 字符，两者都在限内） |
+| 详细描述 Description | ≤ 16 000 字符 | 250 ~ 5 000 字符 | 见下方「详细描述（中文）」与「详细描述（English）」 |
 | 分类 Category | 必填 | 必填 | **生产力工具（Productivity）**；次选「无障碍/工具」 |
-| 主语言 | 必填 | — | 简体中文（zh-CN） |
+| 主语言 | 必填 | — | 简体中文（zh-CN）；再加一门 **English**（见下） |
 | 隐私政策 URL | **必填** | **必填** | `https://github.com/crossSulation/ai-reader/blob/main/PRIVACY.md` |
 | 官网 URL | 选填 | 选填 | `https://github.com/crossSulation/ai-reader` |
 | 支持邮箱/链接 | 建议填 | 建议填 | 仓库 Issues 链接（同上） |
 | 搜索词 Search terms | — | ≤ 21 个词 | `划词 翻译 解释 AI 阅读 助手 大模型 追问 笔记 划词翻译 网页 阅读 助手 DeepSeek OpenAI` |
 
-**短描述**（67 字符，直接使用 manifest 里的值，无需改动）：
+### 关于多语言
+
+**扩展本身**的语言由包里的 `_locales/en` + `_locales/zh_CN` 决定，浏览器按系统语言自动选，
+不用在后台做任何配置（这正是扩展管理页、工具栏提示、右键菜单会跟着变的原因）。
+
+**商店页面**是另一回事：详细描述要每种语言各填一份。中英两版的详细描述都已备好，
+在后台「Add language」里加一门 English 粘贴即可。名称与短描述不用填 ——
+后台会读取包里该语言的 `__MSG_` 值。`default_locale` 是 `en`，所以
+**浏览器语言既不是中文也不是英文时**，扩展与商店都会显示英文版。
+
+**短描述**（中文 67 字符，直接使用 manifest 里的值，无需改动）：
 
 ```
 阅读网页文档时选中或双击任意文字，用你自己的大模型即时解释、翻译、追问；结论先行、细节可展开，答案自动存档并可导出 Markdown。
+```
+
+英文版（126 字符，同样取自 manifest，用于 English listing）：
+
+```
+Select any text on a page to ask your own LLM: explain, translate, follow up. Answers are archived and exportable as Markdown.
 ```
 
 ### 详细描述（中文，约 1 100 字符）
@@ -63,7 +79,7 @@ Obsidian（不需要装插件，填个库名就能用）或 Notion（用你自�
 开源、无追踪、无需注册：https://github.com/crossSulation/ai-reader
 ```
 
-### 详细描述（English, optional 2nd language listing）
+### 详细描述（English，第二门语言必填 —— 不加的话英文用户看到的是中文）
 
 ```
 Select text on any page and ask your own LLM about it — right in the page, without
@@ -77,6 +93,9 @@ Answers stream into a full-height side panel with an adjustable, remembered widt
 The first screen gives you a one-line conclusion plus a few key points; details,
 examples and pitfalls stay collapsed until you expand them. Each answer shows how the
 context was compressed and can jump back to the exact spot you selected.
+
+The whole interface is available in English and Chinese, detected from your browser
+language. Answers come back in the same language as the interface.
 
 Bring your own key: the extension has no server and provides no model quota. Paste your
 own API key (DeepSeek, Moonshot/Kimi, OpenAI, Anthropic, or any OpenAI-compatible
@@ -166,6 +185,8 @@ Chrome 会先问「你的扩展是否会收集或使用用户数据」，**必�
 
 注意事项：
   · 需在扩展详情页开启「允许访问文件网址」才能在本机 HTML 文件上使用（非必须）
+  · 界面语言默认跟随浏览器语言（设置页可切中/英），与是否配置 Key 无关；
+    英文环境下的扩展名称、描述、右键菜单都是英文版
   · 浏览器内置 PDF 阅读器与 chrome:// 页面不支持（浏览器不允许扩展注入），非本扩展缺陷
   · 无任何登录、无账号体系，不需要测试账号
 ```
@@ -180,18 +201,29 @@ Chrome 会先问「你的扩展是否会收集或使用用户数据」，**必�
 |---|---|---|---|
 | 商店图标 | 128×128 PNG | 1（必填） | 已有：`icons/icon128.png`（可直接复用） |
 | Edge 商店 Logo | 300×300 PNG | 1（Edge 必填） | `python tools/make_icons.py --store` → `store/logo-300.png` |
-| 截图 | 1280×800（或 640×400） | 1~5（至少 1） | `node tools/make_screenshots.mjs` → `store/screenshot-*.png` |
+| 截图（中文） | 1280×800（或 640×400） | 1~5（至少 1） | `node tools/make_screenshots.mjs` → `store/screenshot-*.png` |
+| 截图（英文） | 1280×800 | 建议与中文同数量 | `node tools/make_screenshots.mjs --lang=en` → `store/screenshot-*.en.png`（**English listing 专用**，别拿中文截图配英文页面） |
 | 小促销图 | 440×280 PNG | 选填 | 未生成；用 128 图标居中放在浅色背景上即可（Chrome 后台标注为 optional） |
 | YouTube 演示视频 | URL | 选填 | — |
 
 截图建议顺序（也是脚本生成的顺序）：
 
-1. `screenshot-1-selection.png` —— 划词后选区旁浮出动作按钮，展示「不遮挡正文」
-2. `screenshot-2-panel.png` —— 右侧面板的分层回答：结论层 + 「展开细节」
+1. `screenshot-1-selection(.en).png` —— 划词后选区旁浮出动作按钮，展示「不遮挡正文」
+2. `screenshot-2-panel(.en).png` —— 右侧面板的分层回答：结论层 + 「展开细节」
+
+> 截图是**真实渲染**出来的：`--lang=en` 让 chrome.i18n 桩返回英文，content.js 自己把界面切成英文。
+> 所以英文 listing 的素材和界面是同源的，语言不会对不上。
 
 ## 七、版本更新说明（Release notes）
 
-每个版本提交时填，用户会在更新后看到。示例（1.3.0）：
+每个版本提交时填，用户会在更新后看到。示例（1.5.0）：
+
+```
+新增：界面中英双语，自动跟随浏览器语言（也可在设置页手动指定）；扩展名称与描述随系统语言显示；
+回答语言与界面语言保持一致。
+```
+
+上一个版本的示例（1.3.0）：
 
 ```
 新增：上下文预算可在设置页调节（适配不同模型的窗口大小）；历史被压缩时面板会明确提示；

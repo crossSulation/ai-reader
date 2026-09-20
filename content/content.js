@@ -19,20 +19,46 @@
   window.__ARC_READER_INJECTED__ = true;
 
   /* ================================================================
+   * 国际化
+   *
+   * content script 不是 ESM，import 不到 lib/*.js；但 manifest 里把
+   * lib/i18n.core.js 放在本文件**之前**作为经典脚本加载，它会把字典挂到
+   * globalThis.AI_READER_I18N 上，于是这里可以同步取词。
+   *
+   * 同步很重要：语言若要走消息去问 service worker，就会出现
+   * 「先按中文渲染一帧、再闪成英文」。宁可字典和界面在同一个进程里。
+   * ================================================================ */
+
+  const I18N = globalThis.AI_READER_I18N;
+
+  /** 取文案。字典没加载上时原样返回 key —— 界面上出现 key 名，比整句消失好排查 */
+  const t = (key, subs) => (I18N ? I18N.t(key, subs) : key);
+
+  /** 与设置项同步界面语言（settings.language 缺省视为「跟随浏览器」） */
+  function setUiLocale(locale) {
+    if (I18N) I18N.setLocale(locale || 'auto');
+  }
+
+  /* ================================================================
    * 常量
    * ================================================================ */
 
   // 需与 lib/prompts.js 的 MODES 保持一致（这里只用到展示用的 label）
   const UI_MODES = [
-    { key: 'explain', label: '解释', desc: '把这段讲明白' },
-    { key: 'translate', label: '翻译', desc: '译成中文 / 英文' },
-    { key: 'example', label: '举例', desc: '给个具体例子' },
-    { key: 'deeper', label: '深入', desc: '背后的原理与延伸' },
-    { key: 'summarize', label: '总结', desc: '提炼要点' },
-    { key: 'ask', label: '提问', desc: '输入自己的问题' },
+    { key: 'explain' },
+    { key: 'translate' },
+    { key: 'example' },
+    { key: 'deeper' },
+    { key: 'summarize' },
+    { key: 'ask' },
   ];
 
-  const MODE_LABEL = UI_MODES.reduce((acc, m) => ({ ...acc, [m.key]: m.label }), {});
+  const KNOWN_MODES = new Set(UI_MODES.map((m) => m.key));
+
+  /** 动作名与动作说明。未知 key 退到「提问」而不是把 mode_xxx_label 这种 key 名显示给用户 */
+  const modeLabel = (key) =>
+    KNOWN_MODES.has(key) ? t(`mode_${key}_label`) : t('mode_ask_label');
+  const modeDesc = (key) => (KNOWN_MODES.has(key) ? t(`mode_${key}_hint`) : '');
 
   const DEFAULT_SETTINGS = {
     trigger: 'chip',
@@ -478,14 +504,18 @@
 }
 .msg-quote.expandable { cursor: pointer; }
 .msg-quote.expandable::after {
-  content: "展开";
+  /* 伪元素取不到 JS 变量，文案由 JS 写进这两个自定义属性（见 syncQuoteLabels） */
+  content: var(--arc-quote-expand, "expand");
   position: absolute; right: 7px; bottom: 4px;
   font-size: 10px; color: #6366f1;
   background: linear-gradient(90deg, transparent, #f6f7fd 32%);
   padding: 0 3px;
 }
 .msg-quote.expanded { max-height: 60vh; overflow-y: auto; }
-.msg-quote.expanded::after { content: "收起"; position: sticky; float: right; }
+.msg-quote.expanded::after {
+  content: var(--arc-quote-collapse, "collapse");
+  position: sticky; float: right;
+}
 
 .msg-question {
   max-width: 100%;
@@ -909,32 +939,32 @@
   <div class="pop-chips"></div>
 </div>
 
-<button class="mini" hidden title="展开 AI 阅读助手"><span>AI</span></button>
+<button class="mini" hidden data-i18n-title="bubbleOpenTitle"><span>AI</span></button>
 
 <aside class="panel" hidden>
-  <div class="panel-resize" title="拖动调整宽度"></div>
+  <div class="panel-resize" data-i18n-title="panelResizeTitle"></div>
   <header class="panel-head">
     <span class="dot"></span>
     <div class="panel-title">
-      <b>AI 阅读助手</b>
+      <b data-i18n="appName"></b>
       <i class="panel-sub"></i>
     </div>
-    <button class="head-btn" data-act="options" title="打开设置">⚙</button>
-    <button class="head-btn" data-act="minimize" title="最小化">—</button>
-    <button class="head-btn" data-act="close" title="结束对话 (Esc)">✕</button>
+    <button class="head-btn" data-act="options" data-i18n-title="panelOptionsTitle">⚙</button>
+    <button class="head-btn" data-act="minimize" data-i18n-title="panelMinTitle">—</button>
+    <button class="head-btn" data-act="close" data-i18n-title="panelCloseTitle">✕</button>
   </header>
 
   <div class="timeline"></div>
 
   <div class="panel-composer">
-    <textarea class="input" rows="1" placeholder="继续追问…（Enter 发送，Shift+Enter 换行）"></textarea>
-    <button class="send" data-act="send">发送</button>
+    <textarea class="input" rows="1" data-i18n-placeholder="panelInputPlaceholder"></textarea>
+    <button class="send" data-act="send" data-i18n="panelSend"></button>
   </div>
 
   <div class="panel-foot">
     <span class="status"></span>
-    <button class="mini-btn" data-act="copy-all" title="复制整段对话">复制全部</button>
-    <button class="mini-btn" data-act="star-last" title="收藏最后一条回答">☆ 收藏</button>
+    <button class="mini-btn" data-act="copy-all" data-i18n-title="panelCopyAllTitle" data-i18n="panelCopyAllLabel"></button>
+    <button class="mini-btn" data-act="star-last" data-i18n-title="panelStarTitle" data-i18n="starOff"></button>
   </div>
 </aside>
 `;
@@ -984,8 +1014,23 @@
     };
 
     applyPanelWidth(settings.panelWidth);
+    applyLabels();
     renderChips();
     bindUI();
+  }
+
+  /**
+   * 把当前语言的文案铺到静态骨架上。
+   *
+   * 语言在设置里被改掉、或本扩展重新注入到新页面时都要重跑一次；
+   * 动态渲染的部分（每条回答、状态行）各自在渲染时调 t()，不在这里管。
+   */
+  function applyLabels() {
+    if (!shadow) return;
+    if (I18N) I18N.applyDom(shadow);
+    // 伪元素文案走自定义属性（见 CSS 里的 .msg-quote::after）
+    shadow.host.style.setProperty('--arc-quote-expand', JSON.stringify(t('quoteExpand')));
+    shadow.host.style.setProperty('--arc-quote-collapse', JSON.stringify(t('quoteCollapse')));
   }
 
   /* ================================================================
@@ -1046,8 +1091,8 @@
       if (!enabled.has(mode.key)) continue;
       const btn = document.createElement('button');
       btn.className = `chip${mode.key === (settings.defaultMode || 'explain') ? ' primary' : ''}`;
-      btn.textContent = mode.label;
-      btn.title = mode.desc;
+      btn.textContent = modeLabel(mode.key);
+      btn.title = modeDesc(mode.key);
       btn.dataset.mode = mode.key;
       els.popChips.appendChild(btn);
     }
@@ -1181,7 +1226,7 @@
     if (!els || !session) return;
     const pending = session.turns.some((t) => t.status === 'pending');
     els.send.disabled = pending;
-    els.send.textContent = pending ? '…' : '发送';
+    els.send.textContent = pending ? '…' : t('panelSend');
   }
 
   function isNearBottom() {
@@ -1202,7 +1247,7 @@
 
     const label = document.createElement('div');
     label.className = 'msg-label';
-    label.textContent = MODE_LABEL[turn.mode] || '提问';
+    label.textContent = modeLabel(turn.mode);
     wrap.appendChild(label);
 
     if (turn.selection) {
@@ -1242,13 +1287,18 @@
     const omitted = info.omittedTurns || 0;
     if (summarized <= 0 && omitted <= 0) return null;
 
-    const bits = [`摘要 ${summarized} 轮`];
-    if (omitted > 0) bits.push(`另有 ${omitted} 轮已省略`);
+    const bits = [t('ctxSummaryTurns', { n: summarized })];
+    if (omitted > 0) bits.push(t('ctxOmittedTurns', { n: omitted }));
     const wrap = document.createElement('div');
     wrap.className = 'ctx-note';
-    wrap.title = `多轮上下文按预算（${info.budget} 字符）压缩后随本轮请求发送：最近 ${info.fullTurns} 轮完整保留，更早的轮次压成摘要。`;
-    wrap.textContent = `已压缩更早对话：${bits.join('，')}`;
+    wrap.title = t('ctxNoteTitle', { budget: info.budget, full: info.fullTurns });
+    wrap.textContent = t('ctxNote', { bits: bits.join(separator()) });
     return wrap;
+  }
+
+  /** 列举分隔符：中文用「，」、英文用「, 」——共用模板会读起来别扭 */
+  function separator() {
+    return I18N && I18N.getLocale() === 'zh' ? '，' : ', ';
   }
 
   function buildAiBlock(turn) {
@@ -1268,37 +1318,37 @@
     gotoBtn.className = 'mini-btn';
     gotoBtn.dataset.act = 'goto-anchor';
     gotoBtn.dataset.id = turn.id;
-    gotoBtn.textContent = '↩ 回看原文';
-    gotoBtn.title = '跳回页面上这段划词的位置';
+    gotoBtn.textContent = t('anchorGoto');
+    gotoBtn.title = t('anchorGotoTitle');
     actions.appendChild(gotoBtn);
 
     const copyBtn = document.createElement('button');
     copyBtn.className = 'mini-btn';
     copyBtn.dataset.act = 'copy-turn';
     copyBtn.dataset.id = turn.id;
-    copyBtn.textContent = '复制';
+    copyBtn.textContent = t('actCopy');
     actions.appendChild(copyBtn);
 
     const exportBtn = document.createElement('button');
     exportBtn.className = 'mini-btn';
     exportBtn.dataset.act = 'export-turn';
     exportBtn.dataset.id = turn.id;
-    exportBtn.textContent = '导出';
-    exportBtn.title = '存到 Obsidian / Notion，或复制为 Markdown';
+    exportBtn.textContent = t('actExport');
+    exportBtn.title = t('actExportTitle');
     actions.appendChild(exportBtn);
 
     const starBtn = document.createElement('button');
     starBtn.className = `mini-btn${turn.favorite ? ' on' : ''}`;
     starBtn.dataset.act = 'star-turn';
     starBtn.dataset.id = turn.id;
-    starBtn.textContent = turn.favorite ? '★ 已收藏' : '☆ 收藏';
+    starBtn.textContent = turn.favorite ? t('starOn') : t('starOff');
     actions.appendChild(starBtn);
 
     const retryBtn = document.createElement('button');
     retryBtn.className = 'mini-btn';
     retryBtn.dataset.act = 'retry-turn';
     retryBtn.dataset.id = turn.id;
-    retryBtn.textContent = '重答';
+    retryBtn.textContent = t('actRetry');
     actions.appendChild(retryBtn);
 
     wrap.appendChild(actions);
@@ -1320,9 +1370,9 @@
     if (turn.status === 'error') {
       const actions =
         turn.errorCode === 'NO_KEY'
-          ? '<div class="err-actions"><button class="err-btn" data-act="options">去设置</button></div>'
+          ? `<div class="err-actions"><button class="err-btn" data-act="options">${escapeHtml(t('errGoSettings'))}</button></div>`
           : '';
-      bodyEl.innerHTML = `<div class="err">${escapeHtml(turn.error || '出错了')}</div>${actions}`;
+      bodyEl.innerHTML = `<div class="err">${escapeHtml(turn.error || t('errGeneric'))}</div>${actions}`;
       return;
     }
 
@@ -1332,14 +1382,14 @@
     if (streaming) html += '<span class="caret"></span>';
 
     if (detail) {
-      const hint = streaming ? '补充中…' : `${detail.length} 字`;
+      const hint = streaming ? t('moreStreaming') : t('moreSize', { n: detail.length });
       const expanded = !!turn.expanded;
       html +=
         `<div class="more">` +
         `<button class="more-btn" data-act="toggle-detail" data-id="${escapeHtml(turn.id)}"` +
         ` aria-expanded="${expanded ? 'true' : 'false'}">` +
         `<span class="more-caret"></span>` +
-        `<span>${expanded ? '收起细节' : '展开细节'}</span>` +
+        `<span>${expanded ? t('moreCollapse') : t('moreExpand')}</span>` +
         `<span class="more-hint">${hint}</span>` +
         `</button>` +
         `<div class="more-body"${expanded ? '' : ' hidden'}>${renderMarkdown(detail)}</div>` +
@@ -1420,7 +1470,7 @@
       const turn = activeTurn();
       if (turn?.status === 'pending') {
         turn.status = 'error';
-        turn.error = '连接已断开（页面可能发生了跳转）。重新划词即可继续。';
+        turn.error = t('errDisconnected');
         renderTimeline();
       }
     });
@@ -1470,21 +1520,25 @@
     renderTimeline();
     scrollTimelineToBottom();
     hidePopover();
-    els.status.textContent = '正在思考…';
+    els.status.textContent = t('panelThinking');
     setStarButton(false);
 
     // 多轮上下文：把已完成的历史轮次带上（当前轮走 selection/context 通道）
     // 带上完整答案（含展开层），否则用户接着问「展开讲讲第三点」时模型看不到那部分
+    // 循环变量刻意不叫 t —— 会遮蔽上面的取词函数 t()
     const history = [];
-    for (const t of session.turns.slice(0, -1)) {
-      if (t.status !== 'done' || !t.answer) continue;
+    for (const prev of session.turns.slice(0, -1)) {
+      if (prev.status !== 'done' || !prev.answer) continue;
       history.push({
         role: 'user',
-        content: t.question
-          ? `${t.question}`
-          : `请${MODE_LABEL[t.mode] || '解释'}这段内容：${String(t.selection).slice(0, 200)}`,
+        content: prev.question
+          ? `${prev.question}`
+          : t('historyAsk', {
+              label: modeLabel(prev.mode),
+              text: String(prev.selection).slice(0, 200),
+            }),
       });
-      history.push({ role: 'assistant', content: turnFullAnswer(t) });
+      history.push({ role: 'assistant', content: turnFullAnswer(prev) });
     }
 
     try {
@@ -1502,7 +1556,7 @@
       });
     } catch (err) {
       turn.status = 'error';
-      turn.error = `无法连接到扩展后台：${err?.message || err}\n请到 chrome://extensions 重新加载本扩展。`;
+      turn.error = t('errBackend', { msg: err?.message || err });
       renderTimeline();
     }
   }
@@ -1571,7 +1625,11 @@
         if (msg.reqId === session.activeId) {
           renderTimeline();
           scrollTimelineToBottom();
-          els.status.textContent = [turn.model, turn.elapsed ? `${(turn.elapsed / 1000).toFixed(1)}s` : '', turn.saved ? '已存档' : '未存档']
+          els.status.textContent = [
+            turn.model,
+            turn.elapsed ? `${(turn.elapsed / 1000).toFixed(1)}s` : '',
+            turn.saved ? t('statusSaved') : t('statusUnsaved'),
+          ]
             .filter(Boolean)
             .join(' · ');
           setStarButton(false);
@@ -1583,22 +1641,22 @@
 
       case 'error':
         turn.status = 'error';
-        turn.error = msg.message || '未知错误';
+        turn.error = msg.message || t('errUnknown');
         turn.errorCode = msg.code || '';
         if (msg.reqId === session.activeId) {
           renderTimeline();
           scrollTimelineToBottom();
-          els.status.textContent = '出错';
+          els.status.textContent = t('statusError');
         }
         syncPanelState();
         break;
 
       case 'aborted':
         turn.status = turn.answer ? 'done' : 'error';
-        if (!turn.answer) turn.error = '已取消。';
+        if (!turn.answer) turn.error = t('errAborted');
         if (msg.reqId === session.activeId) {
           renderTimeline();
-          els.status.textContent = '已取消';
+          els.status.textContent = t('statusCanceled');
         }
         syncPanelState();
         break;
@@ -1635,7 +1693,7 @@
     const btn = shadow.querySelector('[data-act="star-last"]');
     if (!btn) return;
     btn.classList.toggle('on', !!on);
-    btn.textContent = on ? '★ 已收藏' : '☆ 收藏';
+    btn.textContent = on ? t('starOn') : t('starOff');
   }
 
   /* ================================================================
@@ -1650,15 +1708,15 @@
    * 代价是页面脚本重建过那块 DOM 时锚点会失效，此时如实告知，不做假跳转。
    */
   function gotoAnchor(turnId) {
-    const turn = session?.turns.find((t) => t.id === turnId);
+    const turn = session?.turns.find((item) => item.id === turnId);
     if (!turn?.anchor) {
-      flashStatus('这一轮没有原文位置');
+      flashStatus(t('anchorMissing'));
       return;
     }
     const { node, offset } = turn.anchor;
     const holder = node ? (node.nodeType === 1 ? node : node.parentElement) : null;
     if (!holder || !document.contains(holder)) {
-      flashStatus('原文位置已失效（页面内容已变化）');
+      flashStatus(t('anchorLost'));
       return;
     }
     try {
@@ -1741,17 +1799,17 @@
   function turnAsMarkdown(turn) {
     const parts = [];
     if (turn.selection) parts.push(`> ${turn.selection.replace(/\n/g, '\n> ')}`);
-    if (turn.question) parts.push(`**问：** ${turn.question}`);
+    if (turn.question) parts.push(t('questionPrefix', { q: turn.question }));
     parts.push('', turnFullAnswer(turn));
     return parts.join('\n');
   }
 
   async function copyTurn(turnId) {
-    const turn = session?.turns.find((t) => t.id === turnId);
+    const turn = session?.turns.find((item) => item.id === turnId);
     if (!turn?.answer) return;
     const md = `${turnAsMarkdown(turn)}\n\n—— ${document.title} ${location.href}`;
     const ok = await writeClipboard(md);
-    flashStatus(ok ? '已复制到剪贴板' : '复制失败，请手动选中复制');
+    flashStatus(ok ? t('copied') : t('copyFailedManual'));
   }
 
   async function copyAll() {
@@ -1760,14 +1818,14 @@
       `# ${document.title}`,
       location.href,
       '',
-      ...session.turns.filter((t) => t.answer).map((t) => `${turnAsMarkdown(t)}\n\n---\n`),
+      ...session.turns.filter((turn) => turn.answer).map((turn) => `${turnAsMarkdown(turn)}\n\n---\n`),
     ].join('\n');
     const ok = await writeClipboard(md);
-    flashStatus(ok ? '已复制整段对话' : '复制失败');
+    flashStatus(ok ? t('copiedAll') : t('copyFailed'));
   }
 
   async function starTurn(turnId) {
-    const turn = session?.turns.find((t) => t.id === turnId);
+    const turn = session?.turns.find((item) => item.id === turnId);
     if (!turn?.answer) return;
     const willStar = !turn.favorite;
 
@@ -1803,12 +1861,12 @@
       const btn = els.timeline.querySelector(`[data-act="star-turn"][data-id="${turnId}"]`);
       if (btn) {
         btn.classList.toggle('on', willStar);
-        btn.textContent = willStar ? '★ 已收藏' : '☆ 收藏';
+        btn.textContent = willStar ? t('starOn') : t('starOff');
       }
       setStarButton(willStar && turnId === session.activeId);
-      flashStatus(willStar ? '已收藏' : '已取消收藏');
+      flashStatus(willStar ? t('savedOn') : t('savedOff'));
     } catch (err) {
-      flashStatus(`操作失败：${err?.message || err}`);
+      flashStatus(t('opFailed', { msg: err?.message || err }));
     }
   }
 
@@ -1878,7 +1936,7 @@
   }
 
   async function pushTurnToPlatform(target, turn) {
-    flashStatus(target === 'obsidian' ? '正在写入 Obsidian…' : '正在保存到 Notion…');
+    flashStatus(target === 'obsidian' ? t('exportWritingObsidian') : t('exportSavingNotion'));
     try {
       const res = await chrome.runtime.sendMessage({
         type: 'export:save',
@@ -1886,16 +1944,20 @@
         records: [turnAsRecord(turn)],
       });
       if (!res?.ok) {
-        flashStatus(res?.error || '导出失败');
+        flashStatus(res?.error || t('exportFailed'));
         return;
       }
       if (res.target === 'obsidian') {
-        flashStatus(res.chunks > 1 ? `已写入 ${res.file}（分 ${res.chunks} 段）` : `已写入 ${res.file}`);
+        flashStatus(
+          res.chunks > 1
+            ? t('exportWroteChunks', { file: res.file, n: res.chunks })
+            : t('exportWrote', { file: res.file })
+        );
       } else {
-        flashStatus('已保存到 Notion');
+        flashStatus(t('exportSavedNotion'));
       }
     } catch (err) {
-      flashStatus(`导出失败：${err?.message || err}`);
+      flashStatus(t('exportFailedDetail', { msg: err?.message || err }));
     }
   }
 
@@ -1906,13 +1968,13 @@
         records: [turnAsRecord(turn)],
       });
       if (!res?.ok) {
-        flashStatus(res?.error || '生成 Markdown 失败');
+        flashStatus(res?.error || t('exportMdFailed'));
         return;
       }
       const ok = await writeClipboard(res.markdown);
-      flashStatus(ok ? '已复制 Markdown' : '复制失败，请手动选中复制');
+      flashStatus(ok ? t('exportCopiedMd') : t('copyFailedManual'));
     } catch (err) {
-      flashStatus(`复制失败：${err?.message || err}`);
+      flashStatus(t('exportCopyFailed', { msg: err?.message || err }));
     }
   }
 
@@ -1924,7 +1986,7 @@
    */
   async function openExportMenu(turnId, anchor) {
     closeExportMenu();
-    const turn = session?.turns.find((t) => t.id === turnId);
+    const turn = session?.turns.find((item) => item.id === turnId);
     if (!turn?.answer) return;
 
     const status = await chrome.runtime.sendMessage({ type: 'export:status' }).catch(() => null);
@@ -1936,9 +1998,13 @@
     menu.dataset.turn = turnId;
 
     const entries = [
-      ['obsidian', '保存到 Obsidian', status?.obsidian?.vault || '最近打开的库'],
-      ['notion', '保存到 Notion', notionReady ? '' : notionConfigured ? '待授权' : '未配置'],
-      ['clipboard', '复制为 Markdown', ''],
+      ['obsidian', t('exportObsidian'), status?.obsidian?.vault || t('exportVaultRecent')],
+      [
+        'notion',
+        t('exportNotion'),
+        notionReady ? '' : notionConfigured ? t('exportAuthorizing') : t('exportUnconfigured'),
+      ],
+      ['clipboard', t('exportClipboard'), ''],
     ];
     for (const [key, label, note] of entries) {
       const item = document.createElement('button');
@@ -1971,7 +2037,7 @@
         return;
       }
       if (key === 'notion' && !notionReady) {
-        flashStatus(notionConfigured ? '先去设置页授权 Notion' : '先在设置页配置 Notion');
+        flashStatus(notionConfigured ? t('exportNeedNotionAuth') : t('exportNeedNotionConfig'));
         chrome.runtime.sendMessage({ type: 'ui:open-options' });
         return;
       }
@@ -2303,7 +2369,13 @@
   function applySettings(next) {
     const prevWidth = settings.panelWidth;
     settings = { ...DEFAULT_SETTINGS, ...(next || {}) };
+
+    // 界面语言跟着设置走。必须在渲染之前定下来 —— 不然会先按浏览器语言
+    // 画一帧，再被设置改掉，用户看到的就是「闪一下换了语言」。
+    setUiLocale(settings.language);
+
     if (els) {
+      applyLabels();
       renderChips();
       if (settings.panelWidth !== prevWidth) applyPanelWidth(settings.panelWidth);
     }

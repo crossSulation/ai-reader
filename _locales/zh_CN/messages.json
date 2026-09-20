@@ -1,0 +1,14 @@
+{
+  "appName": {
+    "message": "AI 阅读助手 · 划词即问",
+    "description": "扩展名称：显示在工具栏、商店页面与 chrome://extensions"
+  },
+  "appDesc": {
+    "message": "阅读网页文档时选中或双击任意文字，用你自己的大模型即时解释、翻译、追问；结论先行、细节可展开，答案自动存档并可导出 Markdown。",
+    "description": "简短描述（须在 132 个字符以内）"
+  },
+  "cmdExplain": {
+    "message": "解释当前选中的内容",
+    "description": "chrome://extensions/shortcuts 里显示的快捷键说明"
+  }
+}

@@ -6,14 +6,15 @@
  * 就是测试读表单值、而真正干活读持久化值。先保存再测试，两者永远一致。
  */
 
-import { PRESETS, originPatternOf } from '../lib/llm.js';
-import { MODES } from '../lib/prompts.js';
-import { DEFAULT_SETTINGS } from '../lib/store.js';
+import { PRESETS, presetLabel, protocolLabel, originPatternOf } from '../lib/llm.js';
+import { DEFAULT_SETTINGS, AUTO_FOLDER } from '../lib/store.js';
+import { t, setLocale, applyDom, getLocale, timeAgo, applyLanguageSetting } from '../lib/i18n.js';
 import {
   normalizeNotionId,
   looksLikeNotionId,
   obsidianUri,
   obsidianFilePath,
+  resolveObsidianFolder,
   sanitizeName,
 } from '../lib/exporters.js';
 
@@ -21,6 +22,14 @@ const $ = (sel) => document.querySelector(sel);
 const $$ = (sel) => Array.from(document.querySelectorAll(sel));
 
 const send = (msg) => chrome.runtime.sendMessage(msg);
+
+/** 动作 key 的顺序（与 lib/prompts.js 的 MODES 一致），显示名从字典取 */
+const MODE_KEYS = ['explain', 'translate', 'example', 'deeper', 'summarize', 'ask'];
+
+const modeLabel = (key) => t(`mode_${key}_label`);
+
+/** 列举分隔符：中文顿号、英文逗号 */
+const listSep = () => (getLocale() === 'zh' ? '、' : ', ');
 
 let currentSettings = { ...DEFAULT_SETTINGS };
 let allRecords = [];
@@ -85,13 +94,45 @@ function fillPresetOptions() {
   for (const p of PRESETS) {
     const opt = document.createElement('option');
     opt.value = p.id;
-    opt.textContent = p.label;
+    opt.textContent = presetLabel(p.id);
     sel.appendChild(opt);
   }
   const custom = document.createElement('option');
   custom.value = 'custom';
-  custom.textContent = '自定义 / 其他服务商';
+  custom.textContent = t('optCustomProvider');
   sel.appendChild(custom);
+}
+
+/** 协议下拉的两项：文案在字典里，value 是稳定的机器 key */
+function fillProtocolOptions() {
+  const sel = $('#protocol');
+  sel.innerHTML = '';
+  for (const [value, key] of [
+    ['openai', 'optProtocolOpenai'],
+    ['anthropic', 'optProtocolAnthropic'],
+  ]) {
+    const opt = document.createElement('option');
+    opt.value = value;
+    opt.textContent = t(key);
+    sel.appendChild(opt);
+  }
+}
+
+/** 界面语言下拉：auto 走字典，两个语言名用各自的语言写（endonym，不随界面语言变） */
+function fillLanguageOptions() {
+  const sel = $('#language');
+  sel.innerHTML = '';
+  const items = [
+    ['auto', t('optLanguageAuto')],
+    ['zh', t('langZh')],
+    ['en', t('langEn')],
+  ];
+  for (const [value, label] of items) {
+    const opt = document.createElement('option');
+    opt.value = value;
+    opt.textContent = label;
+    sel.appendChild(opt);
+  }
 }
 
 function fillModeOptions() {
@@ -102,24 +143,36 @@ function fillModeOptions() {
   const checks = $('#modeChecks');
   checks.innerHTML = '';
 
-  for (const [key, def] of Object.entries(MODES)) {
+  for (const key of MODE_KEYS) {
     if (key === 'ask') continue; // 追问要先有用户的问题，不能当默认动作或双击动作
 
     for (const target of [sel, quick]) {
       const opt = document.createElement('option');
       opt.value = key;
-      opt.textContent = def.label;
+      opt.textContent = modeLabel(key);
       target.appendChild(opt);
     }
 
     const label = document.createElement('label');
-    label.innerHTML = `<input type="checkbox" value="${key}"><span>${escapeHtml(def.label)}</span>`;
+    label.innerHTML = `<input type="checkbox" value="${key}"><span>${escapeHtml(modeLabel(key))}</span>`;
     checks.appendChild(label);
     label.querySelector('input').addEventListener('change', updateModeCheckHint);
   }
 }
 
 let updateModeCheckHint = () => {};
+
+/**
+ * 读 Obsidian 文件夹输入框。
+ *
+ * 输入框里显示的就是「当前语言的默认名」时，仍然存回哨兵值 AUTO_FOLDER ——
+ * 否则用户点一次保存，文件夹名就被钉死在当时那门语言上，
+ * 以后把界面切成英文，笔记还是会往中文文件夹里写。
+ */
+function readObsidianFolder() {
+  const raw = $('#obsidianFolder').value.trim();
+  return raw === resolveObsidianFolder(AUTO_FOLDER) ? AUTO_FOLDER : raw;
+}
 
 function readForm() {
   const modes = $$('#modeChecks input:checked').map((i) => i.value);
@@ -133,6 +186,7 @@ function readForm() {
     model: $('#model').value.trim(),
     temperature: Number($('#temperature').value),
     contextBudget: Number($('#contextBudget').value),
+    language: $('#language').value || 'auto',
     trigger: ($$('#triggerRadios input:checked')[0] || {}).value || 'chip',
     defaultMode: $('#defaultMode').value || 'explain',
     dblclickAsk: $('#dblclickAsk').checked,
@@ -143,11 +197,40 @@ function readForm() {
     maxHistory: Number($('#maxHistory').value),
     // 笔记集成：粘贴链接也认，入库前统一成裸 ID
     obsidianVault: $('#obsidianVault').value.trim(),
-    obsidianFolder: $('#obsidianFolder').value.trim(),
+    obsidianFolder: readObsidianFolder(),
     notionToken: $('#notionToken').value.trim(),
     notionParentId: normalizeNotionId($('#notionParentId').value),
     configured: !!( $('#baseUrl').value.trim() && $('#apiKey').value.trim() && $('#model').value.trim()),
   };
+}
+
+/**
+ * 应用界面语言。
+ *
+ * 顺序很讲究：先 setLocale，再 applyDom（静态骨架），最后重填动态生成的下拉/复选框 ——
+ * 那些是用 JS 拼出来的，applyDom 管不到，必须重建。
+ */
+function applyLanguage(language) {
+  applyLanguageSetting({ language });
+  applyDom(document);
+  document.title = t('optDocTitle');
+  fillProtocolOptions();
+  fillPresetOptions();
+  fillModeOptions();
+  fillLanguageOptions();
+
+  // 重填之后要把当前值放回去，否则下拉会跳回第一项
+  $('#preset').value = PRESETS.some((p) => p.id === currentSettings.preset)
+    ? currentSettings.preset
+    : 'custom';
+  $('#protocol').value = currentSettings.protocol || 'openai';
+  $('#language').value = currentSettings.language || 'auto';
+  $('#defaultMode').value = currentSettings.defaultMode || 'explain';
+  $('#quickAskMode').value = currentSettings.quickAskMode || 'explain';
+  const enabled = new Set(currentSettings.selectedModes || DEFAULT_SETTINGS.selectedModes);
+  $$('#modeChecks input').forEach((i) => {
+    i.checked = enabled.has(i.value);
+  });
 }
 
 function fillForm(s) {
@@ -165,6 +248,8 @@ function fillForm(s) {
   const budget = Number(currentSettings.contextBudget ?? 30000) || 30000;
   $('#contextBudget').value = String(budget);
   $('#contextBudgetValue').textContent = String(budget);
+
+  $('#language').value = currentSettings.language || 'auto';
 
   const trigger = currentSettings.trigger || 'chip';
   $$('#triggerRadios input').forEach((r) => {
@@ -187,14 +272,13 @@ function fillForm(s) {
   $('#maxHistoryValue').textContent = String(currentSettings.maxHistory ?? 800);
 
   $('#obsidianVault').value = currentSettings.obsidianVault || '';
-  $('#obsidianFolder').value = currentSettings.obsidianFolder || '';
+  // 'auto' 哨兵显示成当前语言的默认文件夹名：用户看到的就是实际会写进去的名字
+  $('#obsidianFolder').value = resolveObsidianFolder(currentSettings.obsidianFolder);
   $('#notionToken').value = currentSettings.notionToken || '';
   $('#notionParentId').value = currentSettings.notionParentId || '';
   renderIntegrateHint();
 
-  $('#keyHint').textContent = currentSettings.apiKey
-    ? '密钥以明文保存在本机扩展存储中。建议单独申请一个低额度 Key 专供本插件使用。'
-    : '还没有填密钥。密钥只存在本机，不会同步到其他设备。';
+  $('#keyHint').textContent = currentSettings.apiKey ? t('optKeyHintSet') : t('optKeyHintEmpty');
 
   // 表单已与存储对齐，此刻没有未保存的改动
   markSaved();
@@ -284,7 +368,18 @@ function bindForm() {
     const input = $('#apiKey');
     const show = input.type === 'password';
     input.type = show ? 'text' : 'password';
-    $('#toggleKey').textContent = show ? '隐藏' : '显示';
+    $('#toggleKey').textContent = show ? t('optHideKey') : t('optShowKey');
+  });
+
+  // 语言切换要立刻重绘整页 —— 这是唯一一个「改了要重建 DOM」的偏好
+  $('#language').addEventListener('change', async (e) => {
+    currentSettings.language = e.target.value;
+    applyLanguage(e.target.value);
+    renderIntegrateHint();
+    $('#keyHint').textContent = currentSettings.apiKey ? t('optKeyHintSet') : t('optKeyHintEmpty');
+    if (allRecords.length) renderHistory();
+    await persistQuiet({ language: e.target.value });
+    toast(t('optLanguageChanged'), 1600);
   });
 
   $('#temperature').addEventListener('input', (e) => {
@@ -332,7 +427,7 @@ function bindForm() {
   $('#testOnlyBtn').addEventListener('click', () => runTest({ useForm: true }));
   $('#refreshPerm').addEventListener('click', () => {
     renderPermissions();
-    toast('已刷新权限列表');
+    toast(t('optPermRefreshed'));
   });
 
   $('#search').addEventListener('input', () => {
@@ -348,7 +443,7 @@ function bindForm() {
 async function persistQuiet(patch) {
   Object.assign(currentSettings, patch);
   const res = await send({ type: 'settings:save', patch });
-  if (!res?.ok) toast(`保存失败：${res?.error || '未知错误'}`, 3200);
+  if (!res?.ok) toast(t('optSaveFailedDetail', { msg: res?.error || t('optUnknownError') }), 3200);
 }
 
 /* ================================================================
@@ -363,18 +458,15 @@ async function persistQuiet(patch) {
 async function ensurePermission(baseUrl) {
   const pattern = originPatternOf(baseUrl);
   if (!pattern) {
-    return { ok: false, message: '接口地址无法解析。请填写完整地址，例如 https://api.deepseek.com/v1' };
+    return { ok: false, message: t('optPermPatternMissing') };
   }
   try {
     if (await chrome.permissions.contains({ origins: [pattern] })) return { ok: true, pattern };
     const granted = await chrome.permissions.request({ origins: [pattern] });
     if (granted) return { ok: true, pattern, fresh: true };
-    return {
-      ok: false,
-      message: `未获得 ${pattern} 的联网权限，请求会被浏览器拦截。请再点一次「保存并测试」，或在扩展详情页手动授予站点访问权限。`,
-    };
+    return { ok: false, message: t('optPermDenied', { pattern }) };
   } catch (err) {
-    return { ok: false, message: `申请权限失败：${err?.message || err}` };
+    return { ok: false, message: t('optPermRequestFailed', { msg: err?.message || err }) };
   }
 }
 
@@ -392,11 +484,14 @@ async function renderPermissions() {
   const real = origins.filter((o) => !/^https?:\/\/(\*|https?)\/\*$/.test(o) && o !== '<all_urls>');
 
   if (!real.length) {
-    box.innerHTML = '<div class="perm-empty">尚未授予任何接口域名的访问权限。填好模型配置后点「保存并测试」即可授权。</div>';
+    box.innerHTML = `<div class="perm-empty">${escapeHtml(t('optPermEmpty'))}</div>`;
     return;
   }
   box.innerHTML = real
-    .map((o) => `<div class="perm-item"><span class="pill">已授权</span>${escapeHtml(o)}</div>`)
+    .map(
+      (o) =>
+        `<div class="perm-item"><span class="pill">${escapeHtml(t('optPermGranted'))}</span>${escapeHtml(o)}</div>`
+    )
     .join('');
 }
 
@@ -412,11 +507,11 @@ function renderIntegrateHint() {
   const hasToken = !!$('#notionToken').value.trim();
   const hasParent = looksLikeNotionId($('#notionParentId').value);
   if (hasToken && hasParent) {
-    note.textContent = 'Notion 已填写。点「连接 Notion 并测试」验证令牌和页面权限。';
+    note.textContent = t('optIntegrateNoteNotionReady');
   } else if (hasToken || hasParent) {
-    note.textContent = '令牌与父页面都填好之后才能导出到 Notion。';
+    note.textContent = t('optIntegrateNoteNotionPartial');
   } else {
-    note.textContent = 'Obsidian 无需授权，填好库名就能用；Notion 需要上面两项配置。';
+    note.textContent = t('optIntegrateNoteIdle');
   }
 }
 
@@ -434,36 +529,37 @@ async function onNotionConnect() {
   try {
     granted = await chrome.permissions.request({ origins: [NOTION_ORIGIN] });
   } catch (err) {
-    note.textContent = `申请权限失败：${err?.message || err}`;
+    note.textContent = t('optNotionPermFailed', { msg: err?.message || err });
     return;
   }
   if (!granted) {
-    note.textContent = '未授予 api.notion.com 的访问权限，导出到 Notion 会被浏览器拦下。';
+    note.textContent = t('optNotionPermDenied');
     return;
   }
 
   const token = $('#notionToken').value.trim();
   const parent = normalizeNotionId($('#notionParentId').value);
   if (!token) {
-    note.textContent = '先填写 Notion 集成令牌。';
+    note.textContent = t('optNotionNeedToken');
     return;
   }
   $('#notionParentId').value = parent;
   await persistQuiet({ notionToken: token, notionParentId: parent });
 
   btn.disabled = true;
-  btn.textContent = '连接中…';
+  const idleLabel = t('optNotionConnect');
+  btn.textContent = t('optNotionConnecting');
   try {
     const res = await send({ type: 'export:test-notion', token, parentId: parent });
     note.textContent = res?.ok
-      ? `连接正常：集成「${res.botName}」· 父页面「${res.parentTitle}」已就绪。`
-      : `连接失败：${res?.error || '未知错误'}`;
+      ? t('optNotionConnectOk', { bot: res.botName, parent: res.parentTitle })
+      : t('optNotionConnectFailed', { msg: res?.error || t('optUnknownError') });
     await renderPermissions();
   } catch (err) {
-    note.textContent = `连接失败：${err?.message || err}`;
+    note.textContent = t('optNotionConnectFailed', { msg: err?.message || err });
   } finally {
     btn.disabled = false;
-    btn.textContent = '连接 Notion 并测试';
+    btn.textContent = idleLabel;
   }
 }
 
@@ -471,15 +567,15 @@ async function onNotionConnect() {
 async function onObsidianTest() {
   const note = $('#integrateNote');
   const vault = $('#obsidianVault').value.trim();
-  const folder = $('#obsidianFolder').value.trim();
-  const name = sanitizeName('AI 阅读助手 · 配置测试', 60);
+  const folder = readObsidianFolder();
+  const name = sanitizeName(t('optObsidianTestTitle'), 60);
   const content = [
-    '# 配置测试',
+    t('optObsidianTestFile'),
     '',
-    '能看到这篇笔记，说明 Obsidian 这条链路是通的。',
+    t('optObsidianTestIntro'),
     '',
-    `库名：${vault || '(最近打开的库)'}`,
-    `文件夹：${folder || '(库根目录)'}`,
+    t('optObsidianTestVault', { vault: vault || t('optObsidianTestVaultRecent') }),
+    t('optObsidianTestFolder', { folder: folder || t('optObsidianTestFolderEmpty') }),
     '',
   ].join('\n');
 
@@ -487,9 +583,9 @@ async function onObsidianTest() {
     await chrome.tabs.create({
       url: obsidianUri({ vault, file: obsidianFilePath(folder, name), content }),
     });
-    note.textContent = '已发往 Obsidian，去库里看一眼有没有出现这篇测试笔记。';
+    note.textContent = t('optObsidianTestSent');
   } catch (err) {
-    note.textContent = `打开 Obsidian 失败：${err?.message || err}`;
+    note.textContent = t('optObsidianTestFailed', { msg: err?.message || err });
   }
 }
 
@@ -501,33 +597,35 @@ async function onObsidianTest() {
 async function pushBatchTo(target) {
   const rows = historyFiltered.length ? historyFiltered : allRecords;
   if (!rows.length) {
-    toast('没有可导出的记录');
+    toast(t('optNoRecordsToSend'));
     return;
   }
   if (target === 'obsidian' && rows.length > 10) {
-    const ok = confirm(
-      `将把当前 ${rows.length} 条记录合并成一篇笔记写入 Obsidian。\n\n内容较长时会自动分成几次写入（每段都进同一篇笔记）。继续？`
-    );
-    if (!ok) return;
+    if (!confirm(t('optBatchConfirm', { n: rows.length }))) return;
   }
 
   const btn = target === 'obsidian' ? $('#exportObsidianBtn') : $('#exportNotionBtn');
   const label = btn.textContent;
   btn.disabled = true;
-  btn.textContent = '发送中…';
+  btn.textContent = t('optSending');
   try {
     const res = await send({ type: 'export:save', target, records: rows });
     if (!res?.ok) {
-      toast(res?.error || '发送失败', 4200);
+      toast(res?.error || t('optSendFailed'), 4200);
       return;
     }
     if (target === 'obsidian') {
-      toast(`已写入 Obsidian：${res.file}${res.chunks > 1 ? `（分 ${res.chunks} 段）` : ''}`, 3600);
+      toast(
+        res.chunks > 1
+          ? t('optSentObsidianChunks', { file: res.file, n: res.chunks })
+          : t('optSentObsidian', { file: res.file }),
+        3600
+      );
     } else {
-      toast(`已在 Notion 新建页面，写入 ${rows.length} 条记录`, 3600);
+      toast(t('optSentNotion', { n: rows.length }), 3600);
     }
   } catch (err) {
-    toast(`发送失败：${err?.message || err}`, 4200);
+    toast(t('optSendFailedDetail', { msg: err?.message || err }), 4200);
   } finally {
     btn.disabled = false;
     btn.textContent = label;
@@ -541,7 +639,8 @@ async function pushBatchTo(target) {
 async function onSaveAndTest() {
   const btn = $('#saveBtn');
   btn.disabled = true;
-  btn.textContent = '保存中…';
+  const idleLabel = t('optSaveAndTest');
+  btn.textContent = t('optSaving');
 
   try {
     const patch = readForm();
@@ -550,7 +649,7 @@ async function onSaveAndTest() {
     const perm = await ensurePermission(patch.baseUrl);
 
     const saved = await send({ type: 'settings:save', patch });
-    if (!saved?.ok) throw new Error(saved?.error || '保存失败');
+    if (!saved?.ok) throw new Error(saved?.error || t('optSaveFailed'));
     currentSettings = saved.settings;
     markSaved(); // 已落盘，未保存提示随之消失
 
@@ -559,7 +658,7 @@ async function onSaveAndTest() {
       return;
     }
 
-    btn.textContent = '测试中…';
+    btn.textContent = t('optTesting');
     await renderPermissions();
     // 不传 config：让 SW 读刚保存的持久化设置，测试路径 === 执行路径
     await runTest({ useForm: false });
@@ -567,7 +666,7 @@ async function onSaveAndTest() {
     showResult('err', String(err?.message || err));
   } finally {
     btn.disabled = false;
-    btn.textContent = '保存并测试连接';
+    btn.textContent = idleLabel;
   }
 }
 
@@ -575,7 +674,7 @@ async function runTest({ useForm }) {
   const box = $('#testResult');
   box.hidden = false;
   box.className = 'result loading';
-  box.textContent = '正在向模型服务发起一次极短请求…';
+  box.textContent = t('optTestingNow');
 
   const config = useForm ? readForm() : undefined;
   const res = await send({ type: 'settings:test', config });
@@ -583,16 +682,15 @@ async function runTest({ useForm }) {
   if (res?.ok) {
     box.className = 'result ok';
     box.innerHTML =
-      `<b>✓ 连接正常</b>\n` +
-      `接口：${escapeHtml(res.endpoint)}\n` +
-      `模型：${escapeHtml(res.model)}　·　耗时 ${res.elapsed}ms\n` +
-      `模型回复：${escapeHtml(res.reply || '(空)')}` +
-      (useForm
-        ? `\n\n⚠ 本次测试用的是<b>表单当前值</b>，尚未保存。请点「保存并测试连接」让配置真正生效。`
-        : '');
+      `${t('optTestOkHtml', {
+        endpoint: escapeHtml(res.endpoint),
+        model: escapeHtml(res.model),
+        ms: res.elapsed,
+        reply: escapeHtml(res.reply || t('optTestEmptyReply')),
+      })}` + (useForm ? t('optTestNotSavedHtml') : '');
   } else {
     box.className = 'result err';
-    box.innerHTML = `<b>✗ 连接失败</b>\n${escapeHtml(res?.error || '未知错误')}`;
+    box.innerHTML = t('optTestFailHtml', { msg: escapeHtml(res?.error || t('optUnknownError')) });
   }
 }
 
@@ -615,7 +713,11 @@ async function loadHistory() {
   const domains = Array.from(new Set(allRecords.map((r) => r.domain).filter(Boolean))).sort();
   const sel = $('#domainFilter');
   const prev = sel.value;
-  sel.innerHTML = '<option value="">全部来源</option>';
+  sel.innerHTML = '';
+  const all = document.createElement('option');
+  all.value = '';
+  all.textContent = t('optAllSources');
+  sel.appendChild(all);
   for (const d of domains) {
     const opt = document.createElement('option');
     opt.value = d;
@@ -645,8 +747,8 @@ function renderHistory() {
   const star = allRecords.filter((r) => r.favorite).length;
   $('#histStat').textContent =
     total === 0
-      ? '暂无记录'
-      : `共 ${total} 条 · 收藏 ${star} 条 · 当前筛选出 ${historyFiltered.length} 条`;
+      ? t('optHistStatEmpty')
+      : t('optHistStat', { total, star, shown: historyFiltered.length });
 
   const list = $('#histList');
   $('#histEmpty').hidden = historyFiltered.length > 0;
@@ -660,22 +762,22 @@ function renderHistory() {
     <div class="hist-item" data-id="${escapeHtml(r.id)}">
       <div class="hist-head">
         <div class="hist-main">
-          <div class="hist-sel">${escapeHtml(r.selection || '(无选中内容)')}</div>
+          <div class="hist-sel">${escapeHtml(r.selection || t('noSelection'))}</div>
           <div class="hist-meta">
-            <span class="tag">${escapeHtml(MODES[r.mode]?.label || r.mode || '')}</span>
-            ${r.question ? `<span>问：${escapeHtml(r.question)}</span>` : ''}
-            <span>${escapeHtml(r.domain || '未知来源')}</span>
-            <span>${formatTime(r.ts)}</span>
+            <span class="tag">${escapeHtml(modeLabel(r.mode))}</span>
+            ${r.question ? `<span>${escapeHtml(t('optQuestionTag', { q: r.question }))}</span>` : ''}
+            <span>${escapeHtml(r.domain || t('unknownSource'))}</span>
+            <span>${escapeHtml(formatTime(r.ts))}</span>
           </div>
         </div>
         <div class="hist-actions">
-          <button class="icon-btn ${r.favorite ? 'on' : ''}" data-act="star" title="收藏">${r.favorite ? '★' : '☆'}</button>
-          <button class="icon-btn del" data-act="del" title="删除">✕</button>
+          <button class="icon-btn ${r.favorite ? 'on' : ''}" data-act="star" title="${escapeHtml(t('optStarTitle'))}">${r.favorite ? '★' : '☆'}</button>
+          <button class="icon-btn del" data-act="del" title="${escapeHtml(t('optDelTitle'))}">✕</button>
         </div>
       </div>
       <div class="hist-body" hidden>
-        ${r.url ? `<div class="hist-body src">来源：${escapeHtml(r.title || r.url)}\n${escapeHtml(r.url)}</div>` : ''}
-        <div>${escapeHtml(r.answer || '(空)')}</div>
+        ${r.url ? `<div class="hist-body src">${escapeHtml(t('optHistSource', { title: r.title || r.url, url: r.url }))}</div>` : ''}
+        <div>${escapeHtml(r.answer || t('mdEmpty'))}</div>
       </div>
     </div>`
     )
@@ -684,7 +786,7 @@ function renderHistory() {
   if (historyFiltered.length > LIMIT) {
     list.insertAdjacentHTML(
       'beforeend',
-      `<div class="empty">只显示了最近 ${LIMIT} 条。用搜索或筛选缩小范围，或直接导出全部。</div>`
+      `<div class="empty">${escapeHtml(t('optHistLimit', { n: LIMIT }))}</div>`
     );
   }
 }
@@ -711,7 +813,7 @@ function bindHistoryDelegation() {
       await send({ type: 'history:delete', id });
       allRecords = allRecords.filter((r) => r.id !== id);
       loadHistory();
-      toast('已删除');
+      toast(t('optDeleted'));
       return;
     }
 
@@ -723,13 +825,13 @@ function bindHistoryDelegation() {
 async function onExport() {
   const rows = historyFiltered.length ? historyFiltered : allRecords;
   if (!rows.length) {
-    toast('没有可导出的记录');
+    toast(t('optExportEmpty'));
     return;
   }
 
   const res = await send({ type: 'history:export', records: rows });
   if (!res?.ok) {
-    toast(`导出失败：${res?.error || '未知错误'}`, 3200);
+    toast(t('optExportFailed', { msg: res?.error || t('optUnknownError') }), 3200);
     return;
   }
 
@@ -738,12 +840,12 @@ async function onExport() {
   try {
     await chrome.downloads.download({
       url,
-      filename: `AI阅读助手-问答记录-${today()}.md`,
+      filename: t('optExportFileName', { date: today() }),
       saveAs: true,
     });
-    toast(`已导出 ${rows.length} 条`);
+    toast(t('optExported', { n: rows.length }));
   } catch (err) {
-    toast(`下载失败：${err?.message || err}`, 3200);
+    toast(t('optDownloadFailed', { msg: err?.message || err }), 3200);
   } finally {
     setTimeout(() => URL.revokeObjectURL(url), 60000);
   }
@@ -753,17 +855,16 @@ async function onClear() {
   const total = allRecords.length;
   if (!total) return;
   const star = allRecords.filter((r) => r.favorite).length;
-  const keepFavorites = star > 0 && confirm(
-    `共 ${total} 条记录，其中 ${star} 条已收藏。\n\n点「确定」= 只保留收藏（删除 ${total - star} 条）\n点「取消」= 什么都不做`
-  );
-  if (!keepFavorites && star > 0 && !confirm(`确定要连同 ${star} 条收藏一起全部清空？此操作不可撤销。`)) {
+  const keepFavorites =
+    star > 0 && confirm(t('optClearConfirm', { total, star, keep: total - star }));
+  if (!keepFavorites && star > 0 && !confirm(t('optClearConfirmStar', { star }))) {
     return;
   }
-  if (!star && !confirm(`确定清空全部 ${total} 条记录？此操作不可撤销。`)) return;
+  if (!star && !confirm(t('optClearConfirmAll', { total }))) return;
 
   const res = await send({ type: 'history:clear', keepFavorites });
   if (res?.ok) {
-    toast(keepFavorites ? `已清理，保留 ${res.count} 条收藏` : '已清空');
+    toast(keepFavorites ? t('optClearedKeep', { n: res.count }) : t('optCleared'));
     loadHistory();
   }
 }
@@ -773,8 +874,6 @@ async function onClear() {
  * ================================================================ */
 
 async function bootstrap() {
-  fillPresetOptions();
-  fillModeOptions();
   bindForm();
   bindHistoryDelegation();
 
@@ -784,7 +883,12 @@ async function bootstrap() {
   updateModeCheckHint = () => {};
 
   const res = await send({ type: 'settings:get' });
-  fillForm(res?.settings || DEFAULT_SETTINGS);
+  const settings = res?.settings || DEFAULT_SETTINGS;
+  currentSettings = { ...DEFAULT_SETTINGS, ...settings };
+
+  // 语言必须先定下来再渲染任何东西：否则会先按浏览器语言画一屏，再闪成设置里的语言
+  applyLanguage(currentSettings.language);
+  fillForm(settings);
 
   await renderPermissions();
 

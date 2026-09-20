@@ -1,8 +1,8 @@
 <!DOCTYPE html>
-<html lang="zh-CN">
+<html lang="en">
 <head>
 <meta charset="utf-8">
-<title>AI 阅读助手 · 设置</title>
+<title data-i18n="optDocTitle">AI Reader · Settings</title>
 <link rel="stylesheet" href="options.css">
 </head>
 <body>
@@ -11,12 +11,12 @@
   <div class="topbar-inner">
     <div class="logo">A</div>
     <div class="titles">
-      <h1>AI 阅读助手</h1>
-      <p>划词即问 · 用你自己的模型</p>
+      <h1 data-i18n="appName">AI Reader</h1>
+      <p data-i18n="appTagline">Select to ask · bring your own model</p>
     </div>
     <nav class="tabs">
-      <button class="tab active" data-tab="general">设置</button>
-      <button class="tab" data-tab="history">历史记录 <span class="badge" id="histCount">0</span></button>
+      <button class="tab active" data-tab="general" data-i18n="optTabSettings">Settings</button>
+      <button class="tab" data-tab="history"><span data-i18n="optTabHistory">History</span> <span class="badge" id="histCount">0</span></button>
     </nav>
   </div>
 </header>
@@ -28,125 +28,132 @@
 
     <div class="card">
       <div class="card-head">
-        <h2>模型接入</h2>
-        <p>填一次就能用。密钥只存在这台电脑的浏览器里，不会同步到其他设备。</p>
+        <h2 data-i18n="optModelCardTitle">Model</h2>
+        <p data-i18n="optModelCardDesc">Set it up once.</p>
       </div>
 
       <div class="row">
-        <label for="preset">服务商</label>
+        <label for="preset" data-i18n="optProvider">Provider</label>
         <select id="preset"></select>
       </div>
 
       <div class="grid2">
         <div class="row">
-          <label for="protocol">接口协议</label>
+          <label for="protocol" data-i18n="optProtocol">API protocol</label>
           <select id="protocol">
-            <option value="openai">OpenAI 兼容</option>
-            <option value="anthropic">Anthropic 原生</option>
+            <option value="openai" data-i18n="optProtocolOpenai">OpenAI-compatible</option>
+            <option value="anthropic" data-i18n="optProtocolAnthropic">Anthropic native</option>
           </select>
         </div>
         <div class="row">
-          <label for="model">模型名</label>
+          <label for="model" data-i18n="optModelName">Model name</label>
           <input type="text" id="model" placeholder="deepseek-chat" spellcheck="false">
         </div>
       </div>
 
       <div class="row">
-        <label for="baseUrl">接口地址（Base URL）</label>
+        <label for="baseUrl" data-i18n="optBaseUrl">Base URL</label>
         <input type="text" id="baseUrl" placeholder="https://api.deepseek.com/v1" spellcheck="false">
-        <p class="hint">填到 <code>/v1</code> 即可，程序会自动补 <code>/chat/completions</code>；填完整地址也能识别。</p>
+        <p class="hint" data-i18n-html="optBaseUrlHintHtml"></p>
       </div>
 
       <div class="row">
-        <label for="apiKey">API Key</label>
+        <label for="apiKey" data-i18n="optApiKey">API Key</label>
         <div class="key-wrap">
           <input type="password" id="apiKey" placeholder="sk-..." spellcheck="false" autocomplete="off">
-          <button class="ghost-btn" id="toggleKey" type="button">显示</button>
+          <button class="ghost-btn" id="toggleKey" type="button" data-i18n="optShowKey">Show</button>
         </div>
-        <p class="hint" id="keyHint">密钥以明文保存在本机扩展存储中。建议单独申请一个低额度 Key 专供本插件使用。</p>
+        <p class="hint" id="keyHint" data-i18n="optKeyHintEmpty"></p>
       </div>
 
       <div class="row">
-        <label for="temperature">回答随机性 <span class="value" id="tempValue">0.3</span></label>
+        <label for="temperature"><span data-i18n="optTemperature">Randomness</span> <span class="value" id="tempValue">0.3</span></label>
         <input type="range" id="temperature" min="0" max="1" step="0.1" value="0.3">
-        <p class="hint">越低越稳定保守，查知识建议 0.2~0.4。</p>
+        <p class="hint" data-i18n="optTempHint"></p>
       </div>
 
       <div class="row">
-        <label for="contextBudget">上下文预算 <span class="value" id="contextBudgetValue">30000</span> 字符</label>
+        <label for="contextBudget"><span data-i18n="optBudget">Context budget</span> <span class="value" id="contextBudgetValue">30000</span> <span data-i18n="optBudgetUnit">characters</span></label>
         <input type="range" id="contextBudget" min="6000" max="120000" step="2000" value="30000">
-        <p class="hint">多轮追问时，发给模型的全部内容（含历史压缩摘要）不超过这个量。模型窗口小就调低，窗口大想多带历史就调高。改动立即生效。</p>
+        <p class="hint" data-i18n="optBudgetHint"></p>
       </div>
 
       <div class="actions">
-        <button class="primary-btn" id="saveBtn">保存并测试连接</button>
-        <button class="ghost-btn" id="testOnlyBtn">仅测试</button>
-        <span class="action-note">测试会真实发起一次极短的模型请求，能同时验证地址、密钥、模型名。</span>
+        <button class="primary-btn" id="saveBtn" data-i18n="optSaveAndTest">Save &amp; test connection</button>
+        <button class="ghost-btn" id="testOnlyBtn" data-i18n="optTestOnly">Test only</button>
+        <span class="action-note" data-i18n="optTestNote"></span>
       </div>
 
-      <div class="dirty-hint" id="dirtyHint" hidden>
-        <b>这里有改动还没保存。</b>「仅测试」只用表单当前值发一次请求，不会写入配置——
-        要点「保存并测试连接」，扩展才会用上这套配置。关掉本页也会丢失。
-      </div>
+      <div class="dirty-hint" id="dirtyHint" hidden data-i18n-html="optDirtyHtml"></div>
 
       <div class="result" id="testResult" hidden></div>
     </div>
 
     <div class="card">
       <div class="card-head">
-        <h2>交互方式</h2>
-        <p>控制气泡什么时候出现、回答时默认做什么。</p>
+        <h2 data-i18n="optLanguage">Interface language</h2>
+        <p data-i18n="optLanguageHint"></p>
+      </div>
+      <div class="row">
+        <select id="language"></select>
+      </div>
+    </div>
+
+    <div class="card">
+      <div class="card-head">
+        <h2 data-i18n="optInteractCardTitle">Interaction</h2>
+        <p data-i18n="optInteractCardDesc"></p>
       </div>
 
       <div class="row">
-        <label>划词后的行为</label>
+        <label data-i18n="optTriggerLabel">After selecting text</label>
         <div class="radios" id="triggerRadios">
           <label class="radio">
             <input type="radio" name="trigger" value="chip">
             <span class="radio-body">
-              <b>先浮出小气泡，等我选动作</b>
-              <i>最克制：选区旁给出一排动作按钮，点哪个就在右侧面板展开回答。</i>
+              <b data-i18n="optTriggerChipTitle"></b>
+              <i data-i18n="optTriggerChipDesc"></i>
             </span>
           </label>
           <label class="radio">
             <input type="radio" name="trigger" value="auto">
             <span class="radio-body">
-              <b>划完直接在右侧面板回答</b>
-              <i>最省事：选中即用默认动作开始回答，适合大段啃文档。</i>
+              <b data-i18n="optTriggerAutoTitle"></b>
+              <i data-i18n="optTriggerAutoDesc"></i>
             </span>
           </label>
           <label class="radio">
             <input type="radio" name="trigger" value="off">
             <span class="radio-body">
-              <b>只响应快捷键 / 右键</b>
-              <i>最安静：划词后完全不会自动弹出，用 <kbd>Alt</kbd>+<kbd>Shift</kbd>+<kbd>E</kbd> 或右键菜单触发。（双击即问由下面单独的开关控制，不受这里影响。）</i>
+              <b data-i18n="optTriggerOffTitle"></b>
+              <i data-i18n-html="optTriggerOffDescHtml"></i>
             </span>
           </label>
         </div>
       </div>
 
       <div class="row">
-        <label for="defaultMode">默认动作</label>
+        <label for="defaultMode" data-i18n="optDefaultMode">Default action</label>
         <select id="defaultMode"></select>
       </div>
 
       <div class="row">
-        <label>小气泡上显示的动作</label>
+        <label data-i18n="optBubbleModes">Actions shown in the bubble</label>
         <div class="checks" id="modeChecks"></div>
-        <p class="hint">回答统一在右侧对话面板里展开：全高显示、消息按轮次累积、可继续追问。面板宽度拖左侧边缘即可调整，会自动记住。</p>
+        <p class="hint" data-i18n="optBubbleModesHint"></p>
       </div>
 
       <label class="switch-row">
         <input type="checkbox" id="dblclickAsk">
         <span class="switch"></span>
         <span class="switch-text">
-          <b>双击选词直接提问</b>
-          <i>双击一个单词后立刻开始回答，连气泡都不用点。三击选中整段时仍会先给气泡，让你自己挑动作。</i>
+          <b data-i18n="optDblclickTitle"></b>
+          <i data-i18n="optDblclickDesc"></i>
         </span>
       </label>
 
       <div class="row">
-        <label for="quickAskMode">双击时用的动作</label>
+        <label for="quickAskMode" data-i18n="optQuickAskMode">Action for double-click</label>
         <select id="quickAskMode"></select>
       </div>
 
@@ -154,98 +161,92 @@
         <input type="checkbox" id="layered">
         <span class="switch"></span>
         <span class="switch-text">
-          <b>分层回答：先给结论，细节折叠</b>
-          <i>第一屏只放最关键的信息，想看细节再点「展开细节」。关掉后仍是一次性给出完整回答。</i>
+          <b data-i18n="optLayeredTitle"></b>
+          <i data-i18n="optLayeredDesc"></i>
         </span>
       </label>
     </div>
 
     <div class="card">
       <div class="card-head">
-        <h2>记录与存档</h2>
-        <p>每段问答都能留在本地，随时导出成 Markdown 笔记。</p>
+        <h2 data-i18n="optRecordsCardTitle">Records</h2>
+        <p data-i18n="optRecordsCardDesc"></p>
       </div>
 
       <label class="switch-row">
         <input type="checkbox" id="autoSave">
         <span class="switch"></span>
         <span class="switch-text">
-          <b>自动存档每次问答</b>
-          <i>关闭后气泡上仍可手动点「收藏」保存。</i>
+          <b data-i18n="optAutoSaveTitle"></b>
+          <i data-i18n="optAutoSaveDesc"></i>
         </span>
       </label>
 
       <div class="row">
-        <label for="maxHistory">最多保留条数 <span class="value" id="maxHistoryValue">800</span></label>
+        <label for="maxHistory"><span data-i18n="optMaxHistory">Records kept</span> <span class="value" id="maxHistoryValue">800</span></label>
         <input type="range" id="maxHistory" min="50" max="3000" step="50" value="800">
-        <p class="hint">超出后自动淘汰最旧的记录，被收藏的永不淘汰。</p>
+        <p class="hint" data-i18n="optMaxHistoryHint"></p>
       </div>
     </div>
 
     <div class="card">
       <div class="card-head">
-        <h2>笔记集成</h2>
-        <p>把面板上的单条回答，或历史里的整批存档，推进你的笔记库。内容从本机直接发往你配置的目标，不经过任何中转服务器。</p>
+        <h2 data-i18n="optIntegrateCardTitle">Note integrations</h2>
+        <p data-i18n="optIntegrateCardDesc"></p>
       </div>
 
       <div class="row">
-        <label for="obsidianVault">Obsidian 库名</label>
-        <input type="text" id="obsidianVault" placeholder="留空 = 用最近打开的库" spellcheck="false">
-        <p class="hint">填写 Obsidian 里「打开库」时显示的名字（区分大小写）。留空则由 Obsidian 自己决定写进哪个库。</p>
+        <label for="obsidianVault" data-i18n="optObsidianVault">Obsidian vault</label>
+        <input type="text" id="obsidianVault" data-i18n-placeholder="optObsidianVaultPlaceholder" spellcheck="false">
+        <p class="hint" data-i18n="optObsidianVaultHint"></p>
       </div>
 
       <div class="row">
-        <label for="obsidianFolder">Obsidian 文件夹</label>
-        <input type="text" id="obsidianFolder" placeholder="AI 阅读助手" spellcheck="false">
-        <p class="hint">库内的相对路径，不存在会自动创建。留空 = 写在库根目录。观察库根目录堆满文件的人建议填一个。</p>
+        <label for="obsidianFolder" data-i18n="optObsidianFolder">Obsidian folder</label>
+        <input type="text" id="obsidianFolder" data-i18n-placeholder="optObsidianFolderPlaceholder" spellcheck="false">
+        <p class="hint" data-i18n="optObsidianFolderHint"></p>
       </div>
 
       <div class="row">
-        <label for="notionToken">Notion 集成令牌</label>
-        <input type="password" id="notionToken" placeholder="ntn_… 或 secret_…" spellcheck="false" autocomplete="off">
-        <p class="hint">
-          到 <a href="https://www.notion.so/my-integrations" target="_blank" rel="noreferrer">notion.so/my-integrations</a>
-          新建一个「内部集成」，把生成的令牌复制过来。和 API Key 一样只保存在本机。
-        </p>
+        <label for="notionToken" data-i18n="optNotionToken">Notion integration token</label>
+        <input type="password" id="notionToken" data-i18n-placeholder="optNotionTokenPlaceholder" spellcheck="false" autocomplete="off">
+        <p class="hint" data-i18n-html="optNotionTokenHintHtml"></p>
       </div>
 
       <div class="row">
-        <label for="notionParentId">Notion 父页面</label>
-        <input type="text" id="notionParentId" placeholder="粘贴页面链接或页面 ID" spellcheck="false">
-        <p class="hint">
-          每批导出会在该页面下新建一个子页面。可以直接粘贴页面链接，ID 会自动提取。
-          <b>务必把那个页面分享给集成</b>（页面右上角 ··· → 连接 → 选中你的集成），否则会报「找不到页面」。
-        </p>
+        <label for="notionParentId" data-i18n="optNotionParent">Notion parent page</label>
+        <input type="text" id="notionParentId" data-i18n-placeholder="optNotionParentPlaceholder" spellcheck="false">
+        <p class="hint" data-i18n-html="optNotionParentHintHtml"></p>
       </div>
 
       <div class="actions">
-        <button class="ghost-btn" id="notionConnect">连接 Notion 并测试</button>
-        <button class="ghost-btn" id="obsidianTest">试写一篇 Obsidian 笔记</button>
+        <button class="ghost-btn" id="notionConnect" data-i18n="optNotionConnect">Connect &amp; test Notion</button>
+        <button class="ghost-btn" id="obsidianTest" data-i18n="optObsidianTest">Write a test note to Obsidian</button>
         <span class="action-note" id="integrateNote"></span>
       </div>
     </div>
 
     <div class="card">
       <div class="card-head">
-        <h2>站点权限</h2>
-        <p>只会向「接口地址」所在的域名申请联网权限，不会申请全站访问权。</p>
+        <h2 data-i18n="optPermCardTitle">Site access</h2>
+        <p data-i18n="optPermCardDesc"></p>
       </div>
       <div id="permList" class="perm-list"></div>
       <div class="actions">
-        <button class="ghost-btn" id="refreshPerm">刷新权限列表</button>
-        <span class="action-note">若测试时提示未授权，点此处重新授权。</span>
+        <button class="ghost-btn" id="refreshPerm" data-i18n="optRefreshPerm">Refresh list</button>
+        <span class="action-note" data-i18n="optPermNote"></span>
       </div>
     </div>
 
     <div class="card danger-card">
       <div class="card-head">
-        <h2>安全说明</h2>
+        <h2 data-i18n="optSafetyTitle">Security</h2>
       </div>
       <ul class="notes">
-        <li><b>密钥存放位置：</b>本机浏览器扩展存储（<code>chrome.storage.local</code>），明文保存，<b>不会</b>同步到你的其他设备，也不会发送给除你指定模型服务商以外的任何一方，更不经过任何中转服务器。</li>
-        <li><b>页面内容：</b>只有你主动划词并提问时，选中的文字、所在段落与页面标题才会发给你配置的模型服务商。不提问就什么都不会发出去。</li>
-        <li><b>建议：</b>给本插件单独申请一个低额度 Key，万一泄露损失可控。</li>
-        <li><b>不支持：</b>浏览器内置 PDF 阅读器、<code>chrome://</code> 内部页面（浏览器不允许扩展在这些页面运行）。</li>
+        <li data-i18n-html="optSafetyItem1Html"></li>
+        <li data-i18n-html="optSafetyItem2Html"></li>
+        <li data-i18n-html="optSafetyItem3Html"></li>
+        <li data-i18n-html="optSafetyItem4Html"></li>
       </ul>
     </div>
 
@@ -255,24 +256,24 @@
   <section class="panel" id="panel-history">
     <div class="card">
       <div class="card-head">
-        <h2>问答存档</h2>
-        <p>按页面归档。可搜索、筛选，导出后直接就是一篇可用的 Markdown 笔记。</p>
+        <h2 data-i18n="optHistoryCardTitle">Archive</h2>
+        <p data-i18n="optHistoryCardDesc"></p>
       </div>
 
       <div class="toolbar">
-        <input type="search" id="search" placeholder="搜索选中内容、问题或回答…" spellcheck="false">
-        <select id="domainFilter"><option value="">全部来源</option></select>
-        <label class="mini-check"><input type="checkbox" id="onlyStar"><span>只看收藏</span></label>
+        <input type="search" id="search" data-i18n-placeholder="optSearchPlaceholder" spellcheck="false">
+        <select id="domainFilter"><option value="" data-i18n="optAllSources">All sources</option></select>
+        <label class="mini-check"><input type="checkbox" id="onlyStar"><span data-i18n="optOnlyStar">Saved only</span></label>
         <span class="spacer"></span>
-        <button class="primary-btn" id="exportBtn">导出 Markdown</button>
-        <button class="ghost-btn" id="exportObsidianBtn">发送到 Obsidian</button>
-        <button class="ghost-btn" id="exportNotionBtn">发送到 Notion</button>
-        <button class="ghost-btn" id="clearBtn">清空</button>
+        <button class="primary-btn" id="exportBtn" data-i18n="optExportMd">Export Markdown</button>
+        <button class="ghost-btn" id="exportObsidianBtn" data-i18n="optExportObsidian">Send to Obsidian</button>
+        <button class="ghost-btn" id="exportNotionBtn" data-i18n="optExportNotion">Send to Notion</button>
+        <button class="ghost-btn" id="clearBtn" data-i18n="optClear">Clear</button>
       </div>
 
       <div class="stat-line" id="histStat"></div>
       <div class="hist-list" id="histList"></div>
-      <div class="empty" id="histEmpty" hidden>还没有记录。去网页上划一段文字试试。</div>
+      <div class="empty" id="histEmpty" hidden data-i18n="optHistEmpty"></div>
     </div>
   </section>
 

@@ -1,0 +1,14 @@
+{
+  "appName": {
+    "message": "AI Reader · Select to Ask",
+    "description": "Extension name shown in the toolbar, the store listing and chrome://extensions"
+  },
+  "appDesc": {
+    "message": "Select any text on a page to ask your own LLM: explain, translate, follow up. Answers are archived and exportable as Markdown.",
+    "description": "Short description (must stay under 132 characters)"
+  },
+  "cmdExplain": {
+    "message": "Explain the selected text",
+    "description": "Keyboard shortcut description in chrome://extensions/shortcuts"
+  }
+}

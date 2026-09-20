@@ -10,6 +10,7 @@
 
 import { streamChat, chatOnce } from '../lib/llm.js';
 import { buildRequest, buildPingMessages, createLayerSplitter } from '../lib/prompts.js';
+import { t, setLocale, applyLanguageSetting } from '../lib/i18n.js';
 import {
   getSettings,
   saveSettings,
@@ -28,6 +29,7 @@ import {
   OBSIDIAN_INLINE_LIMIT,
   buildSingleMarkdown,
   markdownFileName,
+  resolveObsidianFolder,
   splitRichText,
   obsidianUri,
   obsidianFilePath,
@@ -44,21 +46,47 @@ import {
 } from '../lib/exporters.js';
 
 /* ------------------------------------------------------------------ */
+/* 界面语言                                                            */
+/* ------------------------------------------------------------------ */
+
+/**
+ * 把设置里的界面语言同步到本进程。
+ *
+ * service worker 是**独立进程**，内容脚本那边 setLocale 过不代表这里也切了 ——
+ * 不显式同步的话，会出现「面板按钮是英文、出错时的提示却是中文」这种撕裂。
+ * 每次读取设置后、以及每次要产生用户可见文案之前，都要走一次。
+ */
+async function syncLocale() {
+  try {
+    const s = await getSettings();
+    applyLanguageSetting(s);
+    return s;
+  } catch {
+    return null;
+  }
+}
+
+/* ------------------------------------------------------------------ */
 /* 右键菜单                                                            */
 /* ------------------------------------------------------------------ */
 
-const MENUS = [
-  { id: 'arc-explain', title: '用 AI 解释「%s」', mode: 'explain' },
-  { id: 'arc-translate', title: '翻译「%s」', mode: 'translate' },
-  { id: 'arc-ask', title: '就此追问 AI…', mode: 'ask' },
+/** 菜单标题随界面语言重建（chrome.contextMenus 只能改，不能「动态取词」） */
+const MENU_DEFS = [
+  { id: 'arc-explain', key: 'swCmdExplain', mode: 'explain' },
+  { id: 'arc-translate', key: 'swCmdTranslate', mode: 'translate' },
+  { id: 'arc-ask', key: 'swCmdAsk', mode: 'ask' },
 ];
+
+function menuTitle(def) {
+  return t(def.key);
+}
 
 function installMenus() {
   chrome.contextMenus.removeAll(() => {
     void chrome.runtime.lastError;
-    for (const m of MENUS) {
+    for (const m of MENU_DEFS) {
       chrome.contextMenus.create(
-        { id: m.id, title: m.title, contexts: ['selection'] },
+        { id: m.id, title: menuTitle(m), contexts: ['selection'] },
         () => void chrome.runtime.lastError
       );
     }
@@ -66,15 +94,19 @@ function installMenus() {
 }
 
 chrome.runtime.onInstalled.addListener(async () => {
+  await syncLocale();
   installMenus();
   const current = await chrome.storage.local.get('arc_settings');
   if (!current.arc_settings) await saveSettings({});
 });
 
-chrome.runtime.onStartup.addListener(installMenus);
+chrome.runtime.onStartup.addListener(async () => {
+  await syncLocale();
+  installMenus();
+});
 
 chrome.contextMenus.onClicked.addListener((info, tab) => {
-  const hit = MENUS.find((m) => m.id === info.menuItemId);
+  const hit = MENU_DEFS.find((m) => m.id === info.menuItemId);
   if (!hit || !tab?.id) return;
   // 右键菜单能拿到 frameId，直接投递到真正持有选区的那个 frame
   chrome.tabs.sendMessage(
@@ -83,6 +115,20 @@ chrome.contextMenus.onClicked.addListener((info, tab) => {
     { frameId: typeof info.frameId === 'number' ? info.frameId : 0 },
     () => void chrome.runtime.lastError
   );
+});
+
+/**
+ * 设置变了就重建菜单。
+ * 菜单标题是「建菜单那一刻」取的语言，不重建就一直是旧语言 ——
+ * 用户切了界面语言却发现右键菜单还是中文，就是漏了这一步。
+ */
+chrome.storage.onChanged.addListener((changes, area) => {
+  if (area !== 'local' || !changes.arc_settings) return;
+  const next = changes.arc_settings.newValue || {};
+  const prev = changes.arc_settings.oldValue || {};
+  if ((next.language || 'auto') === (prev.language || 'auto')) return;
+  setLocale(next.language || 'auto');
+  installMenus();
 });
 
 /* ------------------------------------------------------------------ */
@@ -188,12 +234,15 @@ chrome.runtime.onConnect.addListener((port) => {
     }
 
     const settings = await getSettings();
+    // 产生用户可见文案之前先对齐语言：本进程独立于内容脚本，不共享 setLocale 状态
+    applyLanguageSetting(settings);
+
     if (!settings.apiKey) {
       safePost(port, {
         type: 'error',
         reqId,
         code: 'NO_KEY',
-        message: '还没有配置模型。打开插件设置，填入 API Key 后就能用了。',
+        message: t('swNoKey'),
       });
       return;
     }
@@ -213,9 +262,11 @@ chrome.runtime.onConnect.addListener((port) => {
         history: payload.history,
         layered,
         budget: settings.contextBudget,
+        // 回答语言跟随界面语言：界面切成英文的用户，要的是英文答案
+        answerLang: settings.language === 'en' ? 'en' : 'zh',
       }));
     } catch (err) {
-      safePost(port, { type: 'error', reqId, message: `组装请求失败：${err?.message || err}` });
+      safePost(port, { type: 'error', reqId, message: t('swBuildFailed', { msg: err?.message || err }) });
       return;
     }
 
@@ -259,7 +310,7 @@ chrome.runtime.onConnect.addListener((port) => {
         safePost(port, {
           type: 'error',
           reqId,
-          message: '模型返回了空内容。可能是模型名不对，或该模型只输出推理内容。',
+          message: t('swEmptyReply'),
         });
         return;
       }
@@ -308,7 +359,8 @@ chrome.runtime.onConnect.addListener((port) => {
       batcher.flush();
       pending.delete(reqId);
       const message = String(err?.message || err);
-      if (/已取消|aborted|AbortError/i.test(message)) {
+      // 判「用户主动取消」只看稳定标记，不看文案 —— 文案是会随语言变的
+      if (err?.code === 'ABORTED' || /aborted|AbortError/i.test(message)) {
         safePost(port, { type: 'aborted', reqId });
       } else {
         safePost(port, { type: 'error', reqId, message });
@@ -339,22 +391,24 @@ const idle = (ms) => new Promise((r) => setTimeout(r, ms));
  */
 async function exportToObsidian(records) {
   const s = await getSettings();
+  applyLanguageSetting(s);
   const single = records.length === 1;
 
   const name = single
     ? markdownFileName(records[0])
-    : sanitizeName(`AI 阅读助手 · ${ymdOf(Date.now())}`, 60);
+    : sanitizeName(`${t('appName')} · ${ymdOf(Date.now())}`, 60);
   const content = single ? buildSingleMarkdown(records[0]) : toMarkdown(records);
 
   const chunks = splitRichText(content, OBSIDIAN_INLINE_LIMIT);
   if (chunks.length > MAX_OBSIDIAN_CHUNKS) {
     return {
       ok: false,
-      error: `内容太长（约 ${content.length} 字符，需分 ${chunks.length} 次写入）。请缩小筛选范围，或改用「下载 .md 文件」。`,
+      error: t('swExportTooLong', { n: content.length, chunks: chunks.length }),
     };
   }
 
-  const file = obsidianFilePath(s.obsidianFolder, name);
+  // 'auto' 哨兵在这里解析成当前语言的默认文件夹名（见 store.js 的 AUTO_FOLDER）
+  const file = obsidianFilePath(resolveObsidianFolder(s.obsidianFolder), name);
   let tabId = null;
   for (let i = 0; i < chunks.length; i++) {
     const url = obsidianUri({
@@ -399,12 +453,13 @@ async function notionFetch(path, token, init = {}) {
  */
 async function exportToNotion(records) {
   const s = await getSettings();
-  if (!s.notionToken) throw new Error('还没填 Notion 集成令牌，请先到设置页「笔记集成」里配置');
+  applyLanguageSetting(s);
+  if (!s.notionToken) throw new Error(t('swNotionNoToken'));
   if (!looksLikeNotionId(s.notionParentId)) {
-    throw new Error('Notion 父页面 ID 看起来不对，请回设置页检查（可直接粘贴页面链接）');
+    throw new Error(t('swNotionBadId'));
   }
   if (!(await chrome.permissions.contains({ origins: [NOTION_ORIGIN] }))) {
-    throw new Error('还没授权访问 Notion，请到设置页「笔记集成」点一次「连接并测试」');
+    throw new Error(t('swNotionNoPerm'));
   }
 
   const title = notionPageTitle(records);
@@ -521,9 +576,10 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
         case 'export:markdown': {
           const records = Array.isArray(msg.records) ? msg.records : [];
           if (!records.length) {
-            sendResponse({ ok: false, error: '没有可导出的记录' });
+            sendResponse({ ok: false, error: t('swNoExportRecords') });
             return;
           }
+          await syncLocale();
           sendResponse({
             ok: true,
             markdown: records.length === 1 ? buildSingleMarkdown(records[0]) : toMarkdown(records),
@@ -538,12 +594,12 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
         case 'export:save': {
           const records = Array.isArray(msg.records) ? msg.records : [];
           if (!records.length) {
-            sendResponse({ ok: false, error: '没有可导出的记录' });
+            sendResponse({ ok: false, error: t('swNoExportRecords') });
             return;
           }
           if (msg.target === 'obsidian') sendResponse(await exportToObsidian(records));
           else if (msg.target === 'notion') sendResponse(await exportToNotion(records));
-          else sendResponse({ ok: false, error: `不支持的导出目标：${msg.target}` });
+          else sendResponse({ ok: false, error: t('swBadExportTarget', { target: msg.target }) });
           return;
         }
 
@@ -555,20 +611,21 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
          */
         case 'export:test-notion': {
           const s = await getSettings();
+          applyLanguageSetting(s);
           const token = msg.token || s.notionToken;
           const parentId = normalizeNotionId(msg.parentId || s.notionParentId);
-          if (!token) throw new Error('还没填写 Notion 集成令牌');
+          if (!token) throw new Error(t('swNotionNoTokenShort'));
           if (!looksLikeNotionId(parentId)) {
-            throw new Error('父页面 ID 看起来不对，请粘贴页面链接或 32 位页面 ID');
+            throw new Error(t('swNotionBadIdShort'));
           }
           if (!(await chrome.permissions.contains({ origins: [NOTION_ORIGIN] }))) {
-            throw new Error('尚未授权访问 api.notion.com，请重试并在弹窗里允许');
+            throw new Error(t('swNotionNoPermShort'));
           }
           const me = await notionFetch('/users/me', token);
           const parent = await notionFetch(`/pages/${parentId}`, token);
           sendResponse({
             ok: true,
-            botName: me?.name || me?.bot?.workspace_name || '集成',
+            botName: me?.name || me?.bot?.workspace_name || t('swIntegrationName'),
             parentTitle: notionTitleOf(parent),
           });
           return;
@@ -580,7 +637,7 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
           return;
 
         default:
-          sendResponse({ ok: false, error: `未知消息类型：${msg?.type}` });
+          sendResponse({ ok: false, error: t('swUnknownMessage', { type: msg?.type }) });
       }
     } catch (err) {
       sendResponse({ ok: false, error: String(err?.message || err) });

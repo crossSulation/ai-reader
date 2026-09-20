@@ -43,14 +43,17 @@ function check(name, ok, detail = '') {
 
 /** 在文档创建前注入，模拟扩展环境；`?state=` 决定后台返回什么 */
 const CHROME_STUB = `(() => {
+  const qs = new URLSearchParams(location.search);
   const BASE = {
     preset: 'deepseek', protocol: 'openai',
     baseUrl: 'https://api.deepseek.com/v1', apiKey: '', model: '',
     temperature: 0.3, trigger: 'chip', defaultMode: 'explain',
     selectedModes: ['explain', 'translate', 'example', 'deeper', 'ask'],
     autoSave: true, maxHistory: 800, disabledDomains: [],
+    // language 默认 auto = 跟随浏览器；下面用 ?uilang= 显式覆盖来测两种渲染
+    language: qs.get('uilang') || 'auto',
   };
-  const state = new URLSearchParams(location.search).get('state') || 'unconfigured';
+  const state = qs.get('state') || 'unconfigured';
   const settings = state === 'configured'
     ? { ...BASE, apiKey: 'sk-stub-abcdefghijklmnop', model: 'deepseek-chat' }
     : { ...BASE };
@@ -67,6 +70,7 @@ const CHROME_STUB = `(() => {
       case 'settings:test': return { ok: true, reply: '好', model: settings.model || 'deepseek-chat',
                                      endpoint: 'https://api.deepseek.com/v1/chat/completions', elapsed: 12 };
       case 'history:list':  return { ok: true, records };
+      case 'history:export': return { ok: true, markdown: '# 导出\\n' };
       default:              return { ok: false, error: '未实现：' + (msg && msg.type) };
     }
   };
@@ -84,6 +88,8 @@ const CHROME_STUB = `(() => {
 
   const extra = {
     runtime,
+    // 浏览器界面语言：默认中文，用 ?lang=en-US 模拟英文浏览器
+    i18n: { getUILanguage: () => qs.get('lang') || 'zh-CN' },
     tabs: { create: () => {}, query: async () => [] },
     permissions: {
       contains: async () => true,
@@ -157,6 +163,50 @@ const PAGE_SNAPSHOT = `(() => {
   };
 })()`;
 
+/**
+ * 界面语言快照。
+ *
+ * 除了「是不是英文」，还要抓**残留的中文**：局部漏译（比如卡片标题换了、
+ * 里面的提示文字没换）在肉眼看来「差不多能用」，只有整片扫描才抓得住。
+ * 语言下拉里的「简体中文」是刻意的 endonym，选项里也必然有中文，所以排除掉。
+ */
+const LOCALE_SNAPSHOT = `(() => {
+  const txt = (sel) => {
+    const el = document.querySelector(sel);
+    return el ? (el.textContent || '').trim() : null;
+  };
+  const panel = document.querySelector('#panel-general');
+  let cjkCount = 0;
+  let cjkSample = '';
+  if (panel) {
+    const clone = panel.cloneNode(true);
+    // 这些位置的文案要么是 endonym，要么是动作名（两种语言都用同一个词），
+    // 要么是 select 的 option —— 都会天然带中文，不算漏译
+    for (const sel of ['#language', '#preset', '#protocol', '#defaultMode', '#quickAskMode', '#modeChecks']) {
+      clone.querySelectorAll(sel).forEach((el) => el.remove());
+    }
+    const found = (clone.textContent.match(/[\\u4e00-\\u9fff]/g) || []);
+    cjkCount = found.length;
+    if (cjkCount) {
+      const at = clone.textContent.search(/[\\u4e00-\\u9fff]/);
+      cjkSample = clone.textContent.slice(Math.max(0, at - 30), at + 30).replace(/\\s+/g, ' ');
+    }
+  }
+  return {
+    tabSettings: txt('.tab[data-tab="general"]'),
+    modelCardTitle: txt('#panel-general .card-head h2'),
+    htmlLang: document.documentElement.lang,
+    docTitle: document.title,
+    languageValue: (document.querySelector('#language') || {}).value || null,
+    cjkCount,
+    cjkSample,
+  };
+})()`;
+
+async function readLocaleSnapshot(cdp) {
+  return cdp.eval(LOCALE_SNAPSHOT);
+}
+
 /* ------------------------------------------------------------------ */
 /* 主流程                                                             */
 /* ------------------------------------------------------------------ */
@@ -178,7 +228,7 @@ async function main() {
     await sleep(400);
     let s = await cdp.eval(PAGE_SNAPSHOT);
     check('桩已生效（页面真的跑在模拟环境里）', s.stubState === 'unconfigured', `stubState=${s.stubState}`);
-    check('脚手架脚本执行完成，不再是「加载中…」', s.modelLine !== '加载中…', `modelLine=${JSON.stringify(s.modelLine)}`);
+    check('脚手架脚本执行完成，不再是加载占位文案', !/加载中|Loading/.test(s.modelLine), `modelLine=${JSON.stringify(s.modelLine)}`);
     check('提示条可见', s.tip?.shown === true, `display=${s.tip?.display}`);
     check('提示条说明了缺什么', /API Key|接口地址|模型/.test(s.tipText), `文案：${JSON.stringify(s.tipText)}`);
 
@@ -340,6 +390,42 @@ async function main() {
     check('历史面板出现「发送到 Obsidian」', histBtns.obsidian?.visible === true);
     check('历史面板出现「发送到 Notion」', histBtns.notion?.visible === true);
     check('原来的「导出 Markdown」仍在', histBtns.md?.visible === true);
+
+    /* ---------------------------------------------------------------- */
+    console.log('\n【9】界面语言 · 自动检测浏览器语言');
+
+    // 默认桩的浏览器语言是 zh-CN，且设置里 language='auto'
+    const zhSnap = await readLocaleSnapshot(cdp);
+    check('浏览器语言为中文时渲染中文', zhSnap.tabSettings === '设置', `实际：${zhSnap.tabSettings}`);
+    check('<html lang> 同步成 zh-CN', zhSnap.htmlLang === 'zh-CN', `实际：${zhSnap.htmlLang}`);
+    check('文档标题也是中文', zhSnap.docTitle.includes('设置'), `实际：${zhSnap.docTitle}`);
+    check('中文界面里当然有中文（对照组）', zhSnap.cjkCount > 0, `CJK 字符数=${zhSnap.cjkCount}`);
+
+    /* ---------------------------------------------------------------- */
+    console.log('\n【10】界面语言 · 英文浏览器自动切英文');
+
+    await cdp.navigate(page('options/options.html', 'configured') + '&lang=en-US');
+    await sleep(420);
+    const enSnap = await readLocaleSnapshot(cdp);
+    check('同样的页面在英文浏览器下渲染英文', enSnap.tabSettings === 'Settings', `实际：${enSnap.tabSettings}`);
+    check('<html lang> 切到 en', enSnap.htmlLang === 'en', `实际：${enSnap.htmlLang}`);
+    check('卡片标题也切了（不是只换了一处）', enSnap.modelCardTitle === 'Model', `实际：${enSnap.modelCardTitle}`);
+    check(
+      '设置卡片里没有残留的中文（漏译会被这条抓住）',
+      enSnap.cjkCount === 0,
+      `残留：${enSnap.cjkSample}`
+    );
+
+    // 显式设置要能压过浏览器语言 —— 否则「浏览器是英文但我想用中文」就没法满足
+    await cdp.navigate(page('options/options.html', 'configured') + '&lang=zh-CN&uilang=en');
+    await sleep(420);
+    const forced = await readLocaleSnapshot(cdp);
+    check(
+      '设置里显式选英文时，压过中文浏览器语言',
+      forced.tabSettings === 'Settings',
+      `实际：${forced.tabSettings}`
+    );
+    check('语言下拉停在用户选的那一项', forced.languageValue === 'en', `实际：${forced.languageValue}`);
   } finally {
     await close();
     await server.close();

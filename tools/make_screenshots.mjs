@@ -10,7 +10,14 @@
  * 然后走真实的划词 → 点动作 → 流式回答路径。页面上跑的是**真实的 content.js**，
  * 只是把模型输出用桩灌进去（本机没有 Key，也不需要 Key）。
  *
- * 用法：node tools/make_screenshots.mjs
+ * 界面语言由 `--lang` 决定，默认中文：
+ *   node tools/make_screenshots.mjs             # 中文界面 → screenshot-*.png / tile-440.png
+ *   node tools/make_screenshots.mjs --lang=en   # 英文界面 → screenshot-*.en.png / tile-440.en.png
+ * 商店的英文 listing 配中文截图是很扎眼的疏漏，所以两种语言的素材都出。
+ * 语言不是「画上去的文字」：`?lang=en-US` 会让 chrome.i18n 桩返回英文，
+ * content.js 自己把界面渲染成英文 —— 截的就是真实效果，连漏译都会当场暴露。
+ *
+ * 用法：node tools/make_screenshots.mjs [--lang=zh|en]
  */
 
 import fs from 'node:fs';
@@ -19,14 +26,76 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 import { launchChrome, sleep } from './cdp.mjs';
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
-const HARNESS = pathToFileURL(path.join(HERE, 'harness.html')).href;
 const OUT_DIR = path.resolve(HERE, '..', 'store');
 const PORT = Number(process.env.PORT || 9345);
 const W = 1280;
 const H = 800;
 
+const LANG = ((process.argv.find((a) => a.startsWith('--lang')) || '').split('=')[1] || 'zh').toLowerCase();
+if (!['zh', 'en'].includes(LANG)) {
+  console.error(`不支持的语言 "${LANG}"，只认 zh / en`);
+  process.exit(1);
+}
+const IS_EN = LANG === 'en';
+/** 英文素材加 .en 后缀与原中文文件并存，两边都不覆盖 */
+const SUFFIX = IS_EN ? '.en' : '';
+const HARNESS = pathToFileURL(path.join(HERE, 'harness.html')).href + (IS_EN ? '?lang=en-US' : '?lang=zh-CN');
+
+/**
+ * 展示内容也得分语言：英文界面配一段中文技术笔记，比截图里的按钮还显眼。
+ * 注意 `para` 是从测试页里取的被划选的正文，所以这里只放标题级的装饰文字。
+ */
+const DEMO = IS_EN
+  ? {
+      kicker: 'Deep learning notes · Chapter 3',
+      title: 'Attention: how a model decides where to look',
+      meta: '2026-09-18 · 8 min read · Fundamentals',
+      heading: 'Why attention is needed',
+      para2:
+        'Before attention, a sequence model had to squeeze its whole history into one fixed-size vector — the longer the sentence, the more the earliest words got diluted away. Attention does something different: instead of compressing, it looks back at the entire input every time and weights each part by relevance.',
+      brief: [
+        'Attention makes the model look back at the whole input at every position and weight it by relevance, ',
+        'instead of compressing the sentence into one fixed-size vector.',
+      ],
+      detail: [
+        'It solves long-range dependencies: early information is no longer diluted step by step.\n\n',
+        'Three roles — the query says "what am I looking for", the key says "what do I have", ',
+        'and the value says "what I actually offer". Similarity sets the weight; the weight decides how much is used.\n\n',
+        'One line to remember: attention is not filtering, it is redistributing attention.',
+      ],
+      answer:
+        'Attention makes the model look back at the whole input at every position and weight it by relevance, instead of compressing the sentence into one fixed-size vector.',
+      detailDone: 'It solves long-range dependencies …',
+      tileTitle: 'AI Reader',
+      tileSub: 'Select text · Ask instantly',
+    }
+  : {
+      kicker: '深度学习笔记 · 第 3 章',
+      title: '注意力机制：模型是怎么「看见」重点的',
+      meta: '2026-09-18 · 约 8 分钟 · 基础笔记',
+      heading: '为什么需要注意力',
+      para2:
+        '在它出现之前，序列模型只能把历史压进一个定长向量里，句子一长，早期的信息就被挤掉了。注意力换了个做法：不再压缩，而是每次都回头看一眼全部输入，按相关度加权取用。',
+      brief: [
+        '注意力机制让模型在处理每个位置时，回头看一眼全部输入并按相关度加权取用，',
+        '而不是把整句压进一个定长向量。',
+      ],
+      detail: [
+        '它解决的是一句话里的「长距离依赖」：早期信息不再被中间步骤逐层稀释。\n\n',
+        '三个角色：查询（Query）表示「我在找什么」，键（Key）表示「我有什么」，',
+        '值（Value）表示「我实际提供什么」。相似度决定权重，权重决定取用多少。\n\n',
+        '一句话记住：注意力不是筛选，而是按需要「重新分配关注度」。',
+      ],
+      answer:
+        '注意力机制让模型在处理每个位置时，回头看一眼全部输入并按相关度加权取用，而不是把整句压进一个定长向量。',
+      detailDone: '它解决了一句话里的「长距离依赖」……',
+      tileTitle: 'AI 阅读助手',
+      tileSub: '划词即问 · 双击即问 · 随时追问',
+    };
+
 /** 把测试页打扮成一篇真实的技术笔记：隐藏探针，加标题与排版 */
 const DRESS_UP = `(() => {
+  const demo = ${JSON.stringify(DEMO)};
   const style = document.createElement('style');
   style.textContent = \`
     #probe { display: none !important; }
@@ -47,15 +116,15 @@ const DRESS_UP = `(() => {
 
   const kicker = document.createElement('div');
   kicker.className = 'demo-kicker';
-  kicker.textContent = '深度学习笔记 · 第 3 章';
+  kicker.textContent = demo.kicker;
 
   const title = document.createElement('h1');
   title.className = 'demo-title';
-  title.textContent = '注意力机制：模型是怎么「看见」重点的';
+  title.textContent = demo.title;
 
   const meta = document.createElement('div');
   meta.className = 'demo-meta';
-  meta.textContent = '2026-09-18 · 约 8 分钟 · 基础笔记';
+  meta.textContent = demo.meta;
 
   const para = document.getElementById('para');
   document.body.insertBefore(wrap, para);
@@ -63,20 +132,23 @@ const DRESS_UP = `(() => {
 
   const h2 = document.createElement('h2');
   h2.className = 'demo-h2';
-  h2.textContent = '为什么需要注意力';
+  h2.textContent = demo.heading;
 
   const p2 = document.createElement('p');
   p2.className = 'demo-p';
-  p2.textContent = '在它出现之前，序列模型只能把历史压进一个定长向量里，句子一长，早期的信息就被挤掉了。注意力换了个做法：不再压缩，而是每次都回头看一眼全部输入，按相关度加权取用。';
+  p2.textContent = demo.para2;
 
   wrap.append(h2, p2);
-  return document.querySelector('h1.demo-title').textContent;
+  // 面板标题栏的副标题显示的是页面标题 —— 演示页把标题设成文章标题，截图才像真实使用场景
+  document.title = demo.title;
+  return [document.querySelector('h1.demo-title').textContent, document.querySelector('#para').textContent];
 })()`;
 
 async function main() {
   fs.mkdirSync(OUT_DIR, { recursive: true });
   const { cdp, chromePath, close } = await launchChrome({ port: PORT, startUrl: HARNESS });
   console.log(`Chrome: ${chromePath}`);
+  console.log(`界面语言：${IS_EN ? 'English（--lang=en）' : '中文（默认）'}`);
 
   const shots = [];
   const shoot = async (name) => {
@@ -98,8 +170,10 @@ async function main() {
     });
     await sleep(400);
 
-    const title = await cdp.eval(DRESS_UP);
+    const [title, para] = await cdp.eval(DRESS_UP);
     console.log(`测试页：${title}`);
+    // 顺带当一次语言断言：界面语言和正文语言应该是一路的，不一致说明 ui 没切过来
+    console.log(`正文（前 24 字）：${String(para).slice(0, 24)}`);
 
     /* --- 截图 1：划词后浮出动作气泡（强调不遮挡正文） --- */
     const rect = await cdp.eval(`(() => { const r = document.getElementById('para').getBoundingClientRect();
@@ -109,7 +183,7 @@ async function main() {
       { x: rect.right - 120, y: rect.top + 14 }
     );
     await sleep(350);
-    await shoot('screenshot-1-selection.png');
+    await shoot(`screenshot-1-selection${SUFFIX}.png`);
 
     /* --- 截图 2：右侧面板的分层回答 --- */
     const chip = await cdp.eval(`(() => {
@@ -127,40 +201,33 @@ async function main() {
     const emit = (msg) => cdp.eval(`window.__emit(${JSON.stringify(msg)})`);
 
     await emit({ type: 'start', reqId, model: 'deepseek-chat' });
-    for (const text of [
-      '注意力机制让模型在处理每个位置时，回头看一眼全部输入并按相关度加权取用，',
-      '而不是把整句压进一个定长向量。',
-    ]) {
+    for (const text of DEMO.brief) {
       await emit({ type: 'delta', reqId, part: 'brief', text });
       await sleep(90);
     }
-    for (const text of [
-      '它解决的是一句话里的「长距离依赖」：早期信息不再被中间步骤逐层稀释。\n\n',
-      '三个角色：查询（Query）表示「我在找什么」，键（Key）表示「我有什么」，',
-      '值（Value）表示「我实际提供什么」。相似度决定权重，权重决定取用多少。\n\n',
-      '一句话记住：注意力不是筛选，而是按需要「重新分配关注度」。',
-    ]) {
+    for (const text of DEMO.detail) {
       await emit({ type: 'delta', reqId, part: 'detail', text });
       await sleep(90);
     }
     await emit({
       type: 'done',
       reqId,
-      answer: '注意力机制让模型在处理每个位置时，回头看一眼全部输入并按相关度加权取用，而不是把整句压进一个定长向量。',
-      detail: '它解决的是一句话里的「长距离依赖」……',
+      answer: DEMO.answer,
+      detail: DEMO.detailDone,
       saved: true,
       recordId: 'screenshot',
       elapsed: 1240,
       model: 'deepseek-chat',
     });
     await sleep(400);
-    await shoot('screenshot-2-panel.png');
+    await shoot(`screenshot-2-panel${SUFFIX}.png`);
 
     /* --- 小宣传图 440×280：商店 listing 的 promo tile，缺了排名会靠后 --- */
     await cdp.send('Emulation.setDeviceMetricsOverride', {
       width: 440, height: 280, deviceScaleFactor: 1, mobile: false,
     });
     await cdp.eval(`(() => {
+      const demo = ${JSON.stringify(DEMO)};
       document.documentElement.style.overflow = 'hidden';
       document.body.style.overflow = 'hidden';
       document.getElementById('promo-tile')?.remove();
@@ -170,19 +237,25 @@ async function main() {
         'background:linear-gradient(135deg,#6d28d9 0%,#8b5cf6 52%,#a78bfa 100%);' +
         'display:flex;flex-direction:column;align-items:center;justify-content:center;' +
         'font-family:system-ui,-apple-system,"Segoe UI",sans-serif;';
+      const title = document.createElement('div');
+      title.style.cssText = 'color:#fff;font-size:30px;font-weight:700;margin-top:16px;letter-spacing:.02em';
+      title.textContent = demo.tileTitle;
+      const sub = document.createElement('div');
+      sub.style.cssText = 'color:rgba(255,255,255,.88);font-size:14px;margin-top:8px;letter-spacing:.04em';
+      sub.textContent = demo.tileSub;
       tile.innerHTML = [
         '<div style="position:absolute;width:220px;height:220px;border-radius:50%;background:rgba(255,255,255,.08);right:-60px;top:-70px"></div>',
         '<div style="position:absolute;width:150px;height:150px;border-radius:50%;background:rgba(255,255,255,.06);left:-40px;bottom:-50px"></div>',
         '<img src="../icons/icon128.png" alt="" style="width:76px;height:76px;border-radius:18px;box-shadow:0 6px 18px rgba(30,10,80,.35)">',
-        '<div style="color:#fff;font-size:30px;font-weight:700;margin-top:16px;letter-spacing:.02em">AI 阅读助手</div>',
-        '<div style="color:rgba(255,255,255,.88);font-size:14px;margin-top:8px;letter-spacing:.04em">划词即问 · 双击即问 · 随时追问</div>',
       ].join('');
+      tile.append(title, sub);
       document.documentElement.appendChild(tile);
     })()`);
     await sleep(400);
-    await shoot('tile-440.png');
+    await shoot(`tile-440${SUFFIX}.png`);
 
     console.log(`\n完成，共 ${shots.length} 张，输出目录：store/`);
+    if (!IS_EN) console.log('英文素材：node tools/make_screenshots.mjs --lang=en');
   } finally {
     await close();
   }

@@ -54,6 +54,10 @@ node tools/make_screenshots.mjs         # 产出 store/screenshot-*.png（1280×
 | 小宣传图 tile | 440×280 | 强烈建议（缺了排名靠后） | Chrome 必传位；`store/tile-440.png` |
 | 商店 Logo | 300×300 | Edge 必填 | `store/logo-300.png` |
 
+包里的语言目录（`_locales/en`、`_locales/zh_CN`）不用手工准备，`node tools/package.mjs` 会自动装进 zip，
+并且体检会**解析 `__MSG_` 后**再量名称/描述长度、逐语言检查有没有漏译 ——
+商店里显示成 `__MSG_appName__` 这种事故，在本地就会被打回。
+
 需要手工准备的只剩：一个能公开访问的隐私政策 URL —— 本仓库的
 `PRIVACY.md` 已经够用：`https://github.com/crossSulation/ai-reader/blob/main/PRIVACY.md`。
 （推到 main 后确认该链接能匿名打开即可。）
@@ -64,12 +68,16 @@ node tools/make_screenshots.mjs         # 产出 store/screenshot-*.png（1280×
 
 后台入口：<https://chrome.google.com/webstore/dev/dashboard>
 
-1. **Upload**：点「New item」→ 上传 `dist/ai-reader-1.3.0.zip`
+1. **Upload**：点「New item」→ 上传 `dist/ai-reader-<版本>.zip`（体检脚本产出的那个）
 2. **Store listing**：
    - 名称 / 短描述自动取自 manifest，无需重填；详细描述粘贴 `docs/store-listing.md` 的「详细描述（中文）」
    - 上传 `icons/icon128.png` + `store/screenshot-1-selection.png`、`screenshot-2-panel.png`，
      再传小宣传图 `store/tile-440.png`
    - 分类 **Productivity**，语言 简体中文
+   - **多语言**：包里的 `_locales/en` + `_locales/zh_CN` 只让**扩展本身**（管理页、右键菜单、
+     商店页自动读取的名称与短描述）按浏览器语言显示；**商店页面**的详细描述要另加一门语言：
+     在后台 Store listing 里「Add language」选 English，粘贴 `docs/store-listing.md` 的
+     English 版详细描述。中英各占一门语言，两边的名称/短描述会自动取该语言的 `__MSG_` 值
 3. **Privacy**：
    - 隐私政策 URL：仓库里 PRIVACY.md 的链接
    - 「Data usage」表单逐项照抄 `docs/store-listing.md` 第四节的答案（收集 Website content、
@@ -102,6 +110,7 @@ node tools/make_screenshots.mjs         # 产出 store/screenshot-*.png（1280×
    - 语言 zh-CN：详细描述粘贴中文版；**Store logo 必须上传 300×300**（`store/logo-300.png`，
      这是 Edge 与 Chrome 不同的硬性要求）
    - 截图上传 `store/screenshot-*.png`
+   - 加一门 English：详细描述粘贴 English 版（边缘商店的列表页也支持多语言，同 Chrome）
 5. **Notes for certification**：粘贴 `docs/store-listing.md` 第五节全文（含测试 Key 方案）
 6. **Submit**
 

@@ -23,7 +23,7 @@ const ROOT = path.resolve(HERE, '..');
 const CHECK_ONLY = process.argv.includes('--check');
 
 /** 上架包只装扩展运行时需要的目录/文件 —— 测试、脚本、文档一概不进包 */
-const INCLUDE_DIRS = ['background', 'content', 'lib', 'options', 'popup', 'icons'];
+const INCLUDE_DIRS = ['background', 'content', 'lib', 'options', 'popup', 'icons', '_locales'];
 const INCLUDE_FILES = ['manifest.json', 'LICENSE'];
 
 /** 商店对 manifest 字段的硬限制 */
@@ -126,6 +126,9 @@ function makeZip(entries) {
 
 const readJson = (rel) => JSON.parse(fs.readFileSync(path.join(ROOT, rel), 'utf8'));
 
+/** manifest 里的本地化占位符：__MSG_appName__ */
+const MSG_RE = /__MSG_([A-Za-z0-9_]+)__/g;
+
 function preflight(manifest, pkg) {
   // 1. 版本号：manifest 与 package.json 必须同号，否则商店里显示的版本和仓库对不上
   if (manifest.version !== pkg.version) {
@@ -135,22 +138,79 @@ function preflight(manifest, pkg) {
     fail(`manifest.version "${manifest.version}" 不是商店要求的点分数字（如 1.3.0）`);
   }
 
-  // 2. manifest 基本要件
+  /* 2. 本地化：manifest 的 name / description / 快捷键说明走 __MSG_ + _locales。
+   *    这一步必须在长度检查之前 —— 否则量的是 "__MSG_appName__" 这 15 个字符，
+   *    「名称超长」「某种语言漏译」两件事都会静默放过，上传后才被审核打回。 */
+  const localeRoot = path.join(ROOT, '_locales');
+  const localeDirs = fs.existsSync(localeRoot)
+    ? fs.readdirSync(localeRoot, { withFileTypes: true }).filter((e) => e.isDirectory()).map((e) => e.name)
+    : [];
+  const locales = {};
+  if (!localeDirs.length) {
+    fail('没有 _locales/ 目录：manifest 里的 __MSG_ 解析不出来，商店里名称与描述会是占位符');
+  }
+  for (const name of localeDirs) {
+    const rel = `_locales/${name}/messages.json`;
+    const abs = path.join(ROOT, rel);
+    if (!fs.existsSync(abs)) {
+      fail(`_locales/${name}/ 里没有 messages.json`);
+      continue;
+    }
+    try {
+      locales[name] = readJson(rel);
+    } catch (err) {
+      fail(`${rel} 不是合法 JSON：${err.message}`);
+    }
+  }
+  if (!manifest.default_locale) {
+    fail('manifest 缺少 default_locale（只要用了 __MSG_ 就必须声明，否则扩展根本装不上）');
+  } else if (!localeDirs.includes(manifest.default_locale)) {
+    fail(`default_locale="${manifest.default_locale}"，但 _locales/${manifest.default_locale}/ 不存在`);
+  }
+
+  /** 用某种语言解析一段 __MSG_ 文本 */
+  const resolveIn = (locale, text) =>
+    typeof text === 'string'
+      ? text.replace(MSG_RE, (whole, key) => locales[locale]?.[key]?.message || whole)
+      : text;
+
+  // 凡是 manifest 里用到的 __MSG_ 键，每种语言都得有值；少一个，那种语言下就露占位符
+  const manifestTexts = [
+    manifest.name,
+    manifest.description,
+    manifest.action?.default_title,
+    ...Object.values(manifest.commands || {}).map((c) => c?.description),
+  ];
+  const usedKeys = new Set(manifestTexts.flatMap((text) => [...String(text ?? '').matchAll(MSG_RE)].map((m) => m[1])));
+  for (const key of usedKeys) {
+    for (const locale of localeDirs) {
+      const hit = locales[locale]?.[key];
+      if (!hit?.message) fail(`__MSG_${key}__ 在 _locales/${locale}/messages.json 里没有译文`);
+    }
+  }
+
+  // 3. manifest 基本要件 + 长度（逐语言量，商店是分语言展示的）
   if (manifest.manifest_version !== 3) fail('manifest_version 必须是 3（MV2 已停止受理）');
   if (!manifest.name) fail('manifest 缺少 name');
   if (!manifest.description) fail('manifest 缺少 description');
-  if ((manifest.name || '').length > NAME_MAX) fail(`name 超过 ${NAME_MAX} 字符`);
-  if ((manifest.description || '').length > DESC_MAX) {
-    warn(`description 有 ${manifest.description.length} 字符，超过商店短描述上限 ${DESC_MAX}，提交时会被要求精简`);
+  for (const locale of localeDirs) {
+    const resolvedName = resolveIn(locale, manifest.name || '');
+    const resolvedDesc = resolveIn(locale, manifest.description || '');
+    if (resolvedName.length > NAME_MAX) {
+      fail(`_locales/${locale} 解析出的名称有 ${resolvedName.length} 字符，超过 ${NAME_MAX} 上限`);
+    }
+    if (resolvedDesc.length > DESC_MAX) {
+      warn(`_locales/${locale} 解析出的描述有 ${resolvedDesc.length} 字符，超过商店短描述上限 ${DESC_MAX}，提交时会被要求精简`);
+    }
   }
 
-  // 3. 图标：商店列表需要 128，浏览器工具栏需要 16/32，扩展页需要 48
+  // 4. 图标：商店列表需要 128，浏览器工具栏需要 16/32，扩展页需要 48
   const icons = manifest.icons || {};
   for (const size of ['16', '48', '128']) {
     if (!icons[size]) fail(`icons 缺少 ${size}×${size}（商店必填 128，工具栏需要 16/32）`);
   }
 
-  // 4. 远程代码：MV3 明令禁止。这里盯住 CSP 与外部脚本两种典型形态。
+  // 5. 远程代码：MV3 明令禁止。这里盯住 CSP 与外部脚本两种典型形态。
   const csp = JSON.stringify(manifest.content_security_policy || {});
   if (/unsafe-eval|unsafe-inline/.test(csp)) {
     fail(`content_security_policy 放宽了（${csp}）：商店会直接判定为远程代码风险`);
@@ -170,7 +230,17 @@ function preflight(manifest, pkg) {
     if (remote) fail(`${path.relative(ROOT, f)} 引用了远程脚本：${remote[0]}（MV3 禁止远程代码）`);
   }
 
-  // 5. 权限：能不申请的就不申请。这里的提醒是给提交时「权限用途」栏准备素材的。
+  // 6. 内容脚本的加载顺序：字典必须排在 content.js 之前，内容脚本不是 ESM，import 不进来
+  for (const cs of manifest.content_scripts || []) {
+    const js = cs.js || [];
+    const dict = js.findIndex((f) => f.endsWith('i18n.core.js'));
+    const main = js.findIndex((f) => f.includes('content/content.js'));
+    if (main > -1 && (dict === -1 || dict > main)) {
+      fail('content_scripts 必须先加载 lib/i18n.core.js 再加载 content/content.js，顺序错了界面就没有文案');
+    }
+  }
+
+  // 7. 权限：能不申请的就不申请。这里的提醒是给提交时「权限用途」栏准备素材的。
   const perms = manifest.permissions || [];
   for (const p of perms) {
     if (p === '<all_urls>' || p === 'tabs' || p === 'webRequest') {
@@ -178,11 +248,13 @@ function preflight(manifest, pkg) {
     }
   }
 
-  // 6. 密钥别混进包里
+  // 8. 密钥别混进包里
   for (const f of htmlFiles.concat(['manifest.json'])) {
     const src = fs.readFileSync(f, 'utf8');
     if (/sk-[A-Za-z0-9]{16,}/.test(src)) fail(`${path.relative(ROOT, f)} 疑似写入了明文 API Key`);
   }
+
+  return { localeDirs, defaultLocaleDir: manifest.default_locale };
 }
 
 function collect() {
@@ -223,7 +295,7 @@ function main() {
   const pkg = readJson('package.json');
 
   console.log(`打包前体检 · ai-reader v${manifest.version}\n`);
-  preflight(manifest, pkg);
+  const { localeDirs, defaultLocaleDir } = preflight(manifest, pkg) || {};
 
   const entries = collect();
 
@@ -238,6 +310,16 @@ function main() {
   ].filter(Boolean);
   for (const m of must) {
     if (!names.has(m.replace(/^\.?\//, ''))) fail(`manifest 引用了 ${m}，但它不在打包清单里`);
+  }
+
+  // _locales 不在 manifest 里按路径引用，得单独盯：漏了它，装上就是一堆 __MSG_ 占位符
+  for (const locale of localeDirs || []) {
+    if (!names.has(`_locales/${locale}/messages.json`)) {
+      fail(`_locales/${locale}/messages.json 没进打包清单（商店里那种语言会显示成占位符）`);
+    }
+  }
+  if (defaultLocaleDir && !names.has(`_locales/${defaultLocaleDir}/messages.json`)) {
+    fail(`default_locale 对应的 _locales/${defaultLocaleDir}/messages.json 没进包`);
   }
 
   const total = entries.reduce((n, e) => n + e.data.length, 0);

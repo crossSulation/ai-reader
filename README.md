@@ -2,7 +2,7 @@
 
 阅读网页文档时，选中任意文字即可调用**你自己的大模型**即时解释、翻译、举例、深入、追问；答案流式输出、自动存档，随时导出成 Markdown 笔记。
 
-Chrome / Edge 通用（Manifest V3，零依赖，无需构建）。
+Chrome / Edge 通用（Manifest V3，零依赖，无需构建），界面中英双语自动切换。
 
 ## 功能
 
@@ -20,6 +20,10 @@ Chrome / Edge 通用（Manifest V3，零依赖，无需构建）。
   「更早还有 N 轮已省略」，不静默丢上下文。发生压缩时面板里也会注明「已压缩更早对话」。
 - **回看原文**：每条回答的操作行里有「↩ 回看原文」，一键滚回页面上划词的位置并短暂高亮；
   页面内容被脚本重建导致锚点失效时，会如实提示而不做假跳转。
+- **中英双语界面**：界面语言默认**跟随浏览器**（`chrome.i18n.getUILanguage()`）——中文浏览器显示中文，
+  英文浏览器显示英文，设置页也可以手动钉死一种语言。面板、设置页、弹窗、右键菜单、
+  导出的 Markdown 与 Notion 笔记都跟着切换；**发给模型的回答语言也一并跟随**，
+  不会出现「中文界面配英文回答」。扩展名称与描述走浏览器的 `_locales/`，在商店与扩展管理页就是对的。
 - **快捷键**：`Alt+Shift+E` 解释当前选中内容；右键菜单支持解释 / 翻译 / 追问。
 - **自带密钥**：OpenAI 兼容协议通吃 DeepSeek、Kimi、通义、智谱、硅基流动、Ollama、LM Studio；也支持 Anthropic 原生协议。
 
@@ -57,6 +61,7 @@ Chrome / Edge 通用（Manifest V3，零依赖，无需构建）。
 | 快捷键 | `Alt+Shift+E` |
 | 右键菜单 | 选中文字 → 右键 → 用 AI 解释 / 翻译 / 追问 |
 | 收藏 | 回答下方「☆ 收藏」，收藏永不因条数上限被清理 |
+| 换界面语言 | 设置页 → 界面语言（默认「跟随浏览器」，也可钉死中文 / English） |
 | 导出 | 设置页 → 历史记录 → 导出 Markdown |
 
 ## 界面预览
@@ -76,7 +81,8 @@ node tools/make_preview.mjs   # 生成 tools/preview.html，用浏览器打开
 ```bash
 npm run package        # dist/ai-reader-<版本>.zip（含发布体检：版本号、图标、远程代码、密钥泄漏等检查）
 npm run store:logo     # store/logo-300.png（Edge 必填的 300×300 商店 Logo）
-npm run screenshots    # store/screenshot-*.png（1280×800 真实使用截图）
+npm run screenshots    # store/screenshot-*.png（1280×800 真实使用截图，中文界面）
+npm run screenshots:en # store/screenshot-*.en.png（同上，英文界面 —— 英文 listing 用这组）
 ```
 
 隐私政策在 [PRIVACY.md](PRIVACY.md)，商店要求的公开 URL 直接用它在 GitHub 上的链接。
@@ -109,10 +115,13 @@ ai-reader/
 ├── content/
 │   └── content.js           # 划词气泡 + 右侧对话面板（Shadow DOM 隔离）、选区上下文提取、安全 Markdown 渲染
 ├── lib/
+│   ├── i18n.core.js         # 界面文案的中英字典 + 取词/归一化/落 DOM 的解析器（经典脚本形态，见下）
+│   ├── i18n.js              # i18n 的 ESM 出入口：service worker / 设置页 / 弹窗走这里
 │   ├── llm.js               # OpenAI 兼容 + Anthropic 双协议流式客户端、端点补全、错误翻译
-│   ├── prompts.js           # 各模式提示词、防注入的消息组装、分层标记与增量解析器
+│   ├── prompts.js           # 各模式提示词（含回答语言规则）、防注入的消息组装、分层标记与增量解析器
 │   ├── exporters.js         # 导出到 Obsidian / Notion：URI 构造、blocks 转换、份量与分批约束
 │   └── store.js             # 设置/历史持久化（串行写队列、幂等去重）、Markdown 导出
+├── _locales/                # manifest 元数据的翻译：en / zh_CN（名称、描述、快捷键说明）
 ├── options/                 # 设置页 + 历史面板
 ├── popup/                   # 工具栏弹窗
 ├── docs/                    # 上架手册（PUBLISH.md）与商店文案（store-listing.md）
@@ -120,14 +129,14 @@ ai-reader/
 ├── PRIVACY.md               # 隐私政策（商店必填的公开 URL 指向它）
 └── tools/
     ├── make_icons.py        # 图标生成（纯标准库手写 PNG；--store 另出 300×300 Logo）
-    ├── make_screenshots.mjs # 商店截图：真实 Chrome 走一遍划词→回答路径，精确 1280×800 + 440×280
-    ├── package.mjs          # 上架打包：最小 ZIP 写入器 + 发布前体检
+    ├── make_screenshots.mjs # 商店截图：真实 Chrome 走一遍划词→回答路径，精确 1280×800 + 440×280（--lang=en 出英文素材）
+    ├── package.mjs          # 上架打包：最小 ZIP 写入器 + 发布前体检（含 __MSG_ 解析与漏译检查）
     ├── make_preview.mjs     # 从真实源码抽取 CSS/DOM 生成静态预览页
-    ├── selftest.mjs         # 静态自测：直接加载真实源码跑 79 项断言
+    ├── selftest.mjs         # 静态自测：直接加载真实源码跑 98 项断言
     ├── cdp.mjs              # 极简 CDP 工具箱：起 Chrome / 起本地服务 / 手写协议客户端
     ├── harness.html         # 内容脚本的测试页（桩掉 chrome.* API，加载真实 content.js）
     ├── e2e.mjs              # 端到端回归：真实 Chrome + 真实鼠标事件（54 项）
-    └── e2e-ui.mjs           # 扩展页面回归：真实 popup / options 页 + 计算样式断言（28 项）
+    └── e2e-ui.mjs           # 扩展页面回归：真实 popup / options 页 + 计算样式与语言断言（38 项）
 ```
 
 ### 分层回答是怎么实现的
@@ -169,6 +178,53 @@ Anthropic 分支会把所有 system 消息抽出来拼到最前面（见 `lib/ll
 对主流模型（DeepSeek 64k、GPT-4o / Kimi 128k）都留了很大余量。另外有一条不变式：
 **压缩后总长仍然不超过预算**——所以摘要段的固定开销（标题、省略提示）也要预先从预算里扣掉。
 
+### 界面语言是怎么切换的
+
+界面语言只在一个地方决定：`lib/i18n.core.js`。它被写成**经典脚本**（IIFE 挂 `globalThis`），
+这不是随手的选择 —— content script 不是 ESM 环境，`import` 不进来，而**取词必须是同步的**：
+
+```
+浏览器 UI 语言 ──► normalize() ──► 'zh' | 'en' ──► MESSAGES[locale][key]
+      ▲                  ▲                                   ▲
+chrome.i18n        设置项 language                      t(key, {占位符})
+.getUILanguage()   （auto / zh / en，显式值压过浏览器）
+```
+
+一旦改成「问后台要语言」，第一帧就会先按默认语言画一遍、等答复回来再重画，
+用户会看到界面**闪一下语言**。所以：`lib/i18n.core.js` 被列在 `manifest.content_scripts.js` 里、
+排在 `content.js` 之前，后者用 `globalThis.AI_READER_I18N` 同步取词；
+service worker / 设置页 / 弹窗这些 ESM 环境则通过薄封装 `lib/i18n.js` 用同一份字典 ——
+两侧共用一本词典，不存在「面板说中文、设置页说英文」这种半翻译状态。
+
+三个容易翻车的地方，都已经用测试钉住：
+
+1. **不能提前求值**。`const LABELS = { obsidian: t('exportObsidian') }` 只在模块加载时算一次，
+   之后切换语言它不会变 —— 表现是「换了语言，菜单里那几项还是旧语言」，最难被发现的半翻译。
+   所以协议名、预设名、导出目标名一律做成函数（`protocolLabel()` / `presetLabel()` / `exportLabel()`）。
+2. **组装出来的文案也不能硬编码**。面板里的历史消息、压缩摘要、Markdown 小标题、Notion 报错、
+   「已压缩更早对话」提示全部走 `t()`；自测有一条守卫扫描界面文件里的**中文字符串字面量**，
+   只允许出现在字典自身（注释不算）。
+3. **`data-i18n` 只负责静态部分**。HTML 里的固定文案靠 `data-i18n` / `data-i18n-html` /
+   `data-i18n-title` / `data-i18n-placeholder` 属性一次性落进去（`applyDom()` 对 `document`、
+   shadow root、元素都能用），切语言时重跑一遍即可；动态拼出来的仍然用 `t()`。
+   顺带把 `<html lang>` 也同步了，浏览器的断词、朗读、字体选择才跟着对。
+
+manifest 的 `name` / `description` / 快捷键说明是**另一套机制**（`__MSG_*__` + `_locales/`）：
+由浏览器在安装时按系统语言选定、运行时改不了，所以和界面语言是两件独立的事。
+`default_locale` 定为 `en`，与 `lib/i18n.core.js` 的 `DEFAULT_LOCALE` 保持一致 ——
+浏览器既不是中文也不是英文时，两边一起回落到英文，而不是各说各话。
+
+回答语言跟着界面语言：`lib/prompts.js` 里的 `systemPrompt(answerLang)` 有两份规则，
+service worker 按当前语言选一份发给模型。英文界面下追问得到英文回答，中文界面下得到中文。
+
+两个连带修掉的坑，都值得记一笔：
+
+- **错误分类不能靠匹配文案**。「用户点了取消」原先靠 `message` 里有没有「已取消」来判断，
+  文案一翻译这条判断就失效（取消会被当成真失败弹出报错）。改成给错误对象打上
+  `code = 'ABORTED'` 这种与语言无关的标记。
+- **默认值不能冻结语言**。Obsidian 的默认文件夹名原先在第一次导出时按当时的语言**写死进设置**，
+  之后换成英文界面，文件夹还是中文名。改成设置里存哨兵值 `'auto'`，取用时按当前语言解析。
+
 ### 三道测试，各管一段
 
 ```bash
@@ -185,6 +241,15 @@ npm run test:all          # 三道一起跑
 popup/options 两页的 `hidden` 不变量是否被 CSS 盖掉、JS 引用的元素 id 是否真的存在、
 复制/存档/多轮历史是否都带上了折叠的展开层、份量控制是否只在 `lib/prompts.js` 有一处定义。
 
+i18n 的断言走的是「不可伪造」那条路：中英**键集必须完全一致**（漏译会被抓住）、英文值里不许混进中文、
+界面文件里不许残留硬编码中文串、HTML 里不许有中文文本节点、代码里 `t('xxx')` 用到的每个 key 都真的在字典里、
+拼接出来的 key（`mode_*` / `provider_*`）两种语言都齐全、语言标签归一化（`zh-CN` / `zh_TW` → zh，
+`en-US` → en，未知语言落到默认）、显式语言压过浏览器语言、未知 key 原样返回、
+**占位符缺失时保留 `{x}` 而不是渲染出 `undefined`**；再往下是行为层：
+时间格式跟着语言走、回答语言的 system 提示真的换了内容、Markdown 小标题与 Obsidian 默认文件夹名跟随语言、
+Notion 报错按状态分开翻译、manifest 的 `__MSG_` 键在两种语言里都齐全、
+内容脚本的加载顺序里字典排在前面、且**取词是同步的**（不许为了取词去问后台）。
+
 导出相关的断言盯的是**平台硬约束**而不是「代码跑通了」：rich_text 切分必须无损（拼回来逐字符等于原文）、
 展开后的每一块都 ≤ 2000 字、每一批都 ≤ 100 块、Notion ID 能从整条链接里提取出来、
 内容脚本发起的每条导出消息在 service worker 里都有对应分支。
@@ -195,9 +260,11 @@ popup/options 两页的 `hidden` 不变量是否被 CSS 盖掉、JS 引用的元
 `detail` 置为 2）与**真实三击**，以及分层回答的折叠 / 展开 / 流式重绘后状态不丢。
 
 **e2e-ui.mjs** 起一个本地静态服务（`file://` 下 Chrome 会拒绝加载 ES module，测不出真东西），
-在文档创建前注入 `chrome.*` 桩，然后加载**真实的 popup.html / options.html**，
-断言「未配置 / 已配置 / 后台不可达」三种状态各自的呈现，以及一条通用不变量：
-**凡带 `hidden` 属性的元素，计算样式必须是 `display:none`**。
+在文档创建前注入 `chrome.*` 桩（含可切换的 `i18n.getUILanguage`），然后加载**真实的 popup.html / options.html**，
+断言「未配置 / 已配置 / 后台不可达」三种状态各自的呈现，以及两条通用不变量：
+**凡带 `hidden` 属性的元素，计算样式必须是 `display:none`**；
+**英文浏览器下整个设置卡片里不许残留中文**（在剔除语言/服务商等专有名词下拉后统计 CJK 字符数），
+并且 `<html lang>`、文档标题、卡片标题都要跟着换 —— 「只换了一处」也算失败。
 
 > 为什么三道都要：静态检查和合成事件都发现不了「在 `mousedown` 里把自己 `display:none` 掉，
 > 于是按钮永远收不到 `click`」（v1.1.1），也发现不了「`[hidden]` 被 `.class{display}` 静默盖掉，
@@ -208,6 +275,25 @@ popup/options 两页的 `hidden` 不变量是否被 CSS 盖掉、JS 引用的元
 
 ## 更新记录
 
+- **1.5.0** 界面中英双语，自动跟随浏览器语言：
+  - **自动检测 + 可手动钉死**：默认跟随 `chrome.i18n.getUILanguage()`，中文浏览器出中文、英文浏览器出英文；
+    设置页新增「界面语言」（跟随浏览器 / 简体中文 / English）。面板、设置页、弹窗、右键菜单、
+    导出内容与**回答语言**全部跟着切换。
+  - **字典只有一本**：`lib/i18n.core.js`（中英各 339 条）写在能被 content script 以经典脚本加载的位置，
+    由 manifest 排在 `content.js` 之前；service worker / 设置页 / 弹窗经 `lib/i18n.js` 用同一份字典，
+    所以不会出现「面板中文、设置页英文」的半翻译状态。取词是**同步**的 —— 若改成问后台要语言，
+    界面会先按默认语言画一帧再重画，用户能看到语言闪一下。
+  - **扩展名称与描述走浏览器的 `_locales/`**（`__MSG_appName__` 等 + `default_locale: en`）：
+    这类文案由浏览器在安装时按系统语言选定，运行时改不了，与界面语言是两套独立机制；
+    两者默认语言保持一致（都是英文），浏览器语言既非中文也非英文时不会各说各话。
+  - **连锁修掉的老账**：①「用户点了取消」原先靠匹配中文文案判断，翻译后这个判断会失效
+    （取消被当成真失败弹报错），改成与语言无关的 `code = 'ABORTED'` 标记；
+    ② Obsidian 默认文件夹名原先在首次导出时按当时语言写死进设置，之后换语言不会变，
+    改成存哨兵值 `auto`、按当前语言解析。
+  - **发布体检加了两道**：`_locales/` 进包，且 manifest 里的 `__MSG_` 会被真正解析后再量长度 ——
+    否则量的其实是 `__MSG_appName__` 这 15 个字符，「名称超长」和「某种语言漏译」都会静默放过。
+  - 自测 79 → 98 项（含「英文值里不许混进中文」「界面文件不许残留硬编码中文」「每个 `t()` 用的 key 都要在字典里」），
+    UI 测试 28 → 38 项（中英两种浏览器语言下各渲染一遍 + 残留 CJK 统计）。
 - **1.4.0** 问答结果可以进自己的笔记库了：
   - **导出到 Obsidian**：走 `obsidian://new` 协议，不需要装任何插件，填个库名（留空则用最近打开的库）
     和库内文件夹即可。内容长到一个 URI 装不下时会自动分片追加进同一篇笔记 ——

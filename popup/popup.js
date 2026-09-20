@@ -1,5 +1,7 @@
 /** 扩展图标弹窗：一眼看清「配没配好」和「最近问了什么」 */
 
+import { t, setLocale, applyDom, applyLanguageSetting, timeAgo } from '../lib/i18n.js';
+
 const send = (msg) => chrome.runtime.sendMessage(msg);
 
 function escapeHtml(input) {
@@ -8,27 +10,12 @@ function escapeHtml(input) {
   }[c]));
 }
 
-function timeAgo(ts) {
-  const diff = Date.now() - ts;
-  const m = Math.floor(diff / 60000);
-  if (m < 1) return '刚刚';
-  if (m < 60) return `${m} 分钟前`;
-  const h = Math.floor(m / 60);
-  if (h < 24) return `${h} 小时前`;
-  const d = Math.floor(h / 24);
-  if (d < 30) return `${d} 天前`;
-  const date = new Date(ts);
-  return `${date.getMonth() + 1}月${date.getDate()}日`;
-}
+const MODES = ['explain', 'translate', 'example', 'deeper', 'summarize', 'ask'];
 
-const MODE_LABEL = {
-  explain: '解释',
-  translate: '翻译',
-  example: '举例',
-  deeper: '深入',
-  summarize: '总结',
-  ask: '追问',
-};
+/** 动作名；未知 key 不显示 key 名，退到「提问」 */
+function modeLabel(mode) {
+  return MODES.includes(mode) ? t(`mode_${mode}_label`) : t('mode_ask_label');
+}
 
 function openOptions(tab) {
   chrome.tabs.create({ url: chrome.runtime.getURL(`options/options.html${tab ? `#${tab}` : ''}`) });
@@ -38,9 +25,9 @@ function openOptions(tab) {
 /** 缺哪一项就说哪一项——含糊的「未配置」会让用户以为自己配好了 */
 function missingOf(settings) {
   const miss = [];
-  if (!settings.baseUrl) miss.push('接口地址');
-  if (!settings.apiKey) miss.push('API Key');
-  if (!settings.model) miss.push('模型名');
+  if (!settings.baseUrl) miss.push(t('fieldBaseUrl'));
+  if (!settings.apiKey) miss.push(t('fieldApiKey'));
+  if (!settings.model) miss.push(t('fieldModel'));
   return miss;
 }
 
@@ -58,22 +45,28 @@ function renderStatus({ settings = {}, error = '', recordCount = 0 }) {
   const tipText = document.querySelector('#tipText');
 
   if (error) {
-    line.textContent = '读取设置失败';
-    tipText.textContent = `无法读取设置：${error}。点「设置」重试，或到扩展管理页重新加载一次插件。`;
+    line.textContent = t('popupReadFailed');
+    tipText.textContent = t('popupReadFailedDetail', { msg: error });
     tip.hidden = false;
     return;
   }
 
   const missing = missingOf(settings);
   if (missing.length) {
-    line.textContent = `未配置 · 还差 ${missing.join(' / ')}`;
-    tipText.textContent = `还没有配置模型：缺少 ${missing.join('、')}。填好后点「保存并测试连接」，弹窗这里就会认到。`;
+    // 顶栏用「/」紧凑列举，提示条用顿号/逗号展开成句子 —— 两种语言的标点习惯不同
+    line.textContent = t('popupMissingLine', { list: missing.join(' / ') });
+    tipText.textContent = t('popupMissingDetail', { list: missing.join(listSeparator()) });
     tip.hidden = false;
     return;
   }
 
-  line.textContent = `${settings.model} · ${recordCount} 条记录`;
+  line.textContent = t('popupReady', { model: settings.model, n: recordCount });
   tip.hidden = true;
+}
+
+/** 列举分隔符：中文顿号、英文逗号 */
+function listSeparator() {
+  return document.documentElement.lang.startsWith('zh') ? '、' : ', ';
 }
 
 async function bootstrap() {
@@ -87,13 +80,17 @@ async function bootstrap() {
       send({ type: 'history:list' }),
     ]);
     // 后台返回了结构化的失败（而不是抛异常），也要当成错误说出去
-    if (settingsRes?.ok === false) error = settingsRes.error || '后台返回异常';
-    if (historyRes?.ok === false && !error) error = historyRes.error || '后台返回异常';
+    if (settingsRes?.ok === false) error = settingsRes.error || t('popupBackendError');
+    if (historyRes?.ok === false && !error) error = historyRes.error || t('popupBackendError');
     settings = settingsRes?.settings || {};
     records = historyRes?.records || [];
   } catch (err) {
     error = String(err?.message || err);
   }
+
+  // 语言必须在渲染之前定：先按浏览器语言画一帧再被设置改掉，就是「闪一下换语言」
+  applyLanguageSetting(settings);
+  applyDom(document);
 
   renderStatus({ settings, error, recordCount: records.length });
 
@@ -108,11 +105,11 @@ async function bootstrap() {
       .map(
         (r) => `
       <button class="rec" data-id="${escapeHtml(r.id)}">
-        <div class="rec-sel">${escapeHtml(r.selection || '(无选中内容)')}</div>
+        <div class="rec-sel">${escapeHtml(r.selection || t('noSelection'))}</div>
         <div class="rec-meta">
-          <span class="tag">${escapeHtml(MODE_LABEL[r.mode] || r.mode || '')}</span>
-          <span>${escapeHtml(r.domain || '未知来源')}</span>
-          <span>${timeAgo(r.ts)}</span>
+          <span class="tag">${escapeHtml(modeLabel(r.mode))}</span>
+          <span>${escapeHtml(r.domain || t('unknownSource'))}</span>
+          <span>${escapeHtml(timeAgo(r.ts))}</span>
           ${r.favorite ? '<span>★</span>' : ''}
         </div>
       </button>`

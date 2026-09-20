@@ -16,8 +16,19 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import { buildEndpoint, originPatternOf } from '../lib/llm.js';
-import { buildMessages, buildRequest, MODES, LAYER_MARKER, splitLayered, createLayerSplitter, TOTAL_CHAR_BUDGET, RECENT_TURNS_FULL, HISTORY_SUMMARY_TITLE } from '../lib/prompts.js';
-import { recordId, toMarkdown, domainOf } from '../lib/store.js';
+import { buildMessages, buildRequest, MODES, LAYER_MARKER, splitLayered, createLayerSplitter, TOTAL_CHAR_BUDGET, RECENT_TURNS_FULL, HISTORY_SUMMARY_TITLE, systemPrompt } from '../lib/prompts.js';
+import { recordId, toMarkdown, domainOf, AUTO_FOLDER } from '../lib/store.js';
+import {
+  t,
+  getLocale,
+  setLocale,
+  normalize,
+  timeAgo,
+  formatDate,
+  MESSAGES,
+  LOCALES,
+  DEFAULT_LOCALE,
+} from '../lib/i18n.js';
 import {
   splitRichText,
   buildSingleMarkdown,
@@ -25,6 +36,7 @@ import {
   sanitizeName,
   obsidianUri,
   obsidianFilePath,
+  resolveObsidianFolder,
   recordsToBlocks,
   chunkBlocks,
   notionPagePayload,
@@ -33,6 +45,14 @@ import {
   notionErrorMessage,
   notionTitleOf,
 } from '../lib/exporters.js';
+
+/**
+ * 先把语言钉在中文上。
+ *
+ * 不自测「当前环境恰好是什么语言」—— Node 里 navigator.language 可能是 en-US，
+ * 断言就会随环境漂移。默认语言的显式验证放在 i18n 那一节单独做。
+ */
+setLocale('zh');
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const root = path.resolve(here, '..');
@@ -393,7 +413,9 @@ test('多轮历史必须送完整答案，否则追问「上面第三点」时�
   const at = contentSrc.indexOf('const history = [];');
   assert.ok(at > -1, '找不到 history 组装块');
   const block = contentSrc.slice(at, at + 900);
-  assert.ok(block.includes('turnFullAnswer(t)'), 'history 组装没有走 turnFullAnswer，展开层会丢');
+  // 只认函数名不认变量名：那个循环变量曾经叫 t，与翻译函数 t() 撞名，重构时被改名，
+  // 断言写死变量名会让守卫在「实现没变、只是换了名字」时误报。
+  assert.ok(/turnFullAnswer\(\w+\)/.test(block), 'history 组装没有走 turnFullAnswer，展开层会丢');
 });
 
 test('上下文份量控制只有一处定义：别处不得再写一份裁剪规则', () => {
@@ -1065,14 +1087,27 @@ test('守卫：内容脚本发起的导出消息，service worker 全都实现�
 });
 
 test('守卫：面板菜单的目标名与 service worker 的分派分支对得上', () => {
-  for (const target of ['obsidian', 'notion']) {
+  // 两边的 target 字符串必须逐字相同，拼错一点就是「点了没反应且不报错」。
+  // 菜单项文案现在是 t() 调用、长项还会换行排版，所以按「与格式无关」的方式取，
+  // 并且把 SW 的分派分支当真值来反推 —— 将来 SW 多接一个平台，这里会自动发现面板漏项。
+  const swTargets = [...new Set([...swSrc.matchAll(/msg\.target === '([a-z-]+)'/g)].map((m) => m[1]))];
+  assert.ok(swTargets.length >= 2, `service worker 里没找到导出 target（找到 ${swTargets.length} 个）`);
+
+  const at = contentSrc.indexOf('const entries = [');
+  assert.ok(at > -1, '面板没有导出菜单项定义（找不到 const entries = [）');
+  const entries = contentSrc.slice(at, contentSrc.indexOf('];', at));
+  for (const target of swTargets) {
     assert.ok(
-      contentSrc.includes(`['${target}',`),
+      new RegExp(`['"]${target}['"]`).test(entries),
       `面板导出菜单缺少 ${target} 项（菜单项 key 必须与 SW 的 target 一致）`
     );
-    assert.ok(swSrc.includes(`msg.target === '${target}'`), `service worker 不认 target=${target}`);
     assert.ok(optionsJs.includes(`pushBatchTo('${target}')`), `设置页没有把批量导出接到 ${target}`);
   }
+  // 面板独有的项（剪贴板 / 下载）不许发去后台，否则 SW 只能回一句「未知目标」。
+  assert.ok(entries.includes("'clipboard'"), '面板导出菜单缺少 clipboard 项');
+  assert.ok(!swTargets.includes('clipboard'), 'clipboard 应当在面板本地完成，不该绕后台');
+  assert.ok(contentSrc.includes("key === 'clipboard'"), '面板没有在本地处理 clipboard 导出');
+
   assert.ok(contentSrc.includes('openExportMenu'), '面板没有导出菜单入口');
   assert.ok(contentSrc.includes("case 'export-turn':"), '导出按钮没有接上点击分支');
 });
@@ -1094,6 +1129,280 @@ test('守卫：设置页的集成输入框与读取代码一一对应', () => {
 test('守卫：凭据只走本机存储，不走会同步到所有设备的 sync 通道', () => {
   assert.ok(storeSrc.includes('notionToken'), 'store 里没有 notionToken 默认值');
   assert.ok(!/chrome\.storage\.sync/.test(storeSrc), 'store 用了 sync 存储 —— 凭据会同步到所有设备');
+});
+
+/* ------------------------------------------------------------------ */
+/* i18n                                                                */
+/* ------------------------------------------------------------------ */
+
+/** 界面文件（需要翻译的部分）；lib/prompts.js 不在内 —— 它是给模型看的工程指令，不是界面文案 */
+const UI_FILES = [
+  'content/content.js',
+  'options/options.js',
+  'popup/popup.js',
+  'background/service-worker.js',
+  'lib/store.js',
+  'lib/llm.js',
+  'lib/exporters.js',
+];
+const UI_HTML = ['options/options.html', 'popup/popup.html'];
+
+/** 字典里允许出现中文的英文 key：语言名按惯例用各自的母语写（endonym） */
+const EN_CJK_ALLOW = new Set(['langZh']);
+
+test('i18n：中英 key 集完全一致（漏译会被这条抓住）', () => {
+  const zh = Object.keys(MESSAGES.zh).sort();
+  const en = Object.keys(MESSAGES.en).sort();
+  const onlyZh = zh.filter((k) => !MESSAGES.en[k]);
+  const onlyEn = en.filter((k) => !MESSAGES.zh[k]);
+  assert.equal(onlyZh.length, 0, `这些 key 只有中文：${onlyZh.join(', ')}`);
+  assert.equal(onlyEn.length, 0, `这些 key 只有英文：${onlyEn.join(', ')}`);
+  assert.ok(zh.length > 200, `字典太小（${zh.length} 条），像是没装全`);
+});
+
+test('i18n：每个翻译都得有内容，不允许空串占位', () => {
+  for (const loc of LOCALES) {
+    const empty = Object.entries(MESSAGES[loc]).filter(([, v]) => !String(v || '').trim());
+    assert.equal(empty.length, 0, `${loc} 里这些 key 是空的：${empty.map(([k]) => k).join(', ')}`);
+  }
+});
+
+test('i18n：英文字典里不该混进中文（复制粘贴漏改的典型症状）', () => {
+  const dirty = Object.entries(MESSAGES.en).filter(
+    ([k, v]) => /[\u4e00-\u9fff]/.test(v) && !EN_CJK_ALLOW.has(k)
+  );
+  assert.equal(
+    dirty.length,
+    0,
+    `英文里出现中文：${dirty.map(([k, v]) => `${k} = ${v}`).join(' | ')}`
+  );
+});
+
+test('i18n：界面文件里不允许残留硬编码中文文案', () => {
+  // 只扫「单行」字符串字面量：多行模板里装的是 CSS/HTML 与注释，不是界面文案。
+  // 整行注释也跳过 —— 注释用中文是刻意的，不该被这条误伤。
+  const LIT = /'(?:[^'\\\n]|\\.)*'|"(?:[^"\\\n]|\\.)*"|`(?:[^`\\\n]|\\.)*`/g;
+  const offenders = [];
+  for (const f of UI_FILES) {
+    const src = fs.readFileSync(path.join(root, f), 'utf8');
+    for (const [i, line] of src.split(/\r?\n/).entries()) {
+      const code = line.replace(/^\s*(\/\/|\*|\/\*).*$/, '');
+      if (!code) continue;
+      for (const m of code.matchAll(LIT)) {
+        if (/[\u4e00-\u9fff]/.test(m[0])) offenders.push(`${f}:${i + 1} ${m[0].slice(0, 60)}`);
+      }
+    }
+  }
+  assert.equal(
+    offenders.length,
+    0,
+    `这些界面文案没走 i18n：\n      ${offenders.join('\n      ')}`
+  );
+});
+
+test('i18n：HTML 里不允许残留硬编码中文文本节点', () => {
+  const offenders = [];
+  for (const f of UI_HTML) {
+    const html = fs
+      .readFileSync(path.join(root, f), 'utf8')
+      .replace(/<!--[\s\S]*?-->/g, '')
+      .replace(/<[^>]*>/g, '\u0000');
+    const hit = html.match(/[\u4e00-\u9fff]+/g);
+    if (hit) offenders.push(`${f}: ${hit.join(' / ')}`);
+  }
+  assert.equal(offenders.length, 0, `静态文案应当写成 data-i18n 属性：\n      ${offenders.join('\n      ')}`);
+});
+
+test('i18n：代码里用到的每个 key 都真的在字典里', () => {
+  const known = new Set(Object.keys(MESSAGES[DEFAULT_LOCALE]));
+  const missing = [];
+  for (const f of [...UI_FILES, ...UI_HTML]) {
+    const src = fs.readFileSync(path.join(root, f), 'utf8');
+    for (const m of src.matchAll(/\bt\(\s*'([A-Za-z_]\w*)'/g)) {
+      if (!known.has(m[1])) missing.push(`${f}: t('${m[1]}')`);
+    }
+    for (const m of src.matchAll(/data-i18n(?:-html|-title|-placeholder|-aria-label)?="([^"]+)"/g)) {
+      if (!known.has(m[1])) missing.push(`${f}: data-i18n="${m[1]}"`);
+    }
+  }
+  assert.equal(missing.length, 0, `字典里没有这些 key：\n      ${missing.join('\n      ')}`);
+});
+
+test('i18n：拼接出来的 key（模式 / 服务商）也必须两种语言齐全', () => {
+  const miss = [];
+  for (const loc of LOCALES) {
+    for (const mode of ['explain', 'translate', 'example', 'deeper', 'summarize', 'ask']) {
+      for (const part of [`mode_${mode}_label`, `mode_${mode}_hint`]) {
+        if (!MESSAGES[loc][part]) miss.push(`${loc}:${part}`);
+      }
+    }
+    for (const p of ['deepseek', 'moonshot', 'dashscope', 'zhipu', 'siliconflow', 'openai', 'anthropic', 'ollama', 'lmstudio']) {
+      if (!MESSAGES[loc][`provider_${p}`]) miss.push(`${loc}:provider_${p}`);
+    }
+  }
+  assert.equal(miss.length, 0, `拼接 key 缺这些：${miss.join(', ')}`);
+});
+
+test('i18n：语言标签归一化（zh-CN / zh_TW / en-US 都要认）', () => {
+  assert.equal(normalize('zh-CN'), 'zh');
+  assert.equal(normalize('zh_CN'), 'zh');
+  assert.equal(normalize('zh-TW'), 'zh');
+  assert.equal(normalize('EN-us'), 'en');
+  assert.equal(normalize('en'), 'en');
+  // 不支持的语言退到默认，而不是留空导致界面一片 key 名
+  assert.equal(normalize('ja-JP'), DEFAULT_LOCALE);
+  assert.equal(normalize(''), DEFAULT_LOCALE);
+  assert.equal(normalize(null), DEFAULT_LOCALE);
+});
+
+test('i18n：显式语言压过浏览器语言，auto 交回浏览器', () => {
+  setLocale('en');
+  assert.equal(getLocale(), 'en', '显式指定英文没生效');
+  setLocale('zh');
+  assert.equal(getLocale(), 'zh', '显式指定中文没生效');
+  // auto 之后取到的应当是一个受支持的合法语言（具体值随环境，不能写死）
+  const auto = setLocale('auto');
+  assert.ok(LOCALES.includes(auto), `auto 回落到非法语言：${auto}`);
+  setLocale('zh');
+});
+
+test('i18n：未知 key 原样返回，方便一眼看出漏配', () => {
+  assert.equal(t('__no_such_key__'), '__no_such_key__');
+});
+
+test('i18n：占位符缺失时保留原样，绝不渲染出 undefined', () => {
+  assert.ok(!/\{n\}/.test(t('moreSize', { n: 12 })), '占位符没被替换');
+  assert.ok(t('moreSize', { n: 12 }).includes('12'));
+  // 少传一个参数时只留下那个 {xxx}，不会变成 undefined
+  assert.ok(!t('ctxNote', { bits: '' }).includes('undefined'));
+});
+
+test('i18n：时间格式跟着语言走（中文「3 分钟前」/ 英文「3 min ago」）', () => {
+  const now = Date.now();
+  setLocale('zh');
+  assert.equal(timeAgo(now - 3 * 60000, now), '3 分钟前');
+  assert.ok(/月\d+日/.test(formatDate(now)), `中文短日期格式不对：${formatDate(now)}`);
+  setLocale('en');
+  assert.equal(timeAgo(now - 3 * 60000, now), '3 min ago');
+  assert.ok(/^[A-Z][a-z]{2} \d+$/.test(formatDate(now)), `英文短日期格式不对：${formatDate(now)}`);
+  setLocale('zh');
+});
+
+test('i18n：回答语言跟随界面语言，且真的换了发给模型的 system 提示', () => {
+  assert.ok(systemPrompt('zh').includes('简体中文'), '中文提示里应要求用简体中文回答');
+  assert.ok(systemPrompt('en').includes('Answer in English'), '英文提示里应要求用英文回答');
+  assert.ok(systemPrompt('en').length > 100, '英文提示不该是空壳');
+
+  const base = { mode: 'explain', selection: 'attention is all you need' };
+  const zh = buildRequest({ ...base, answerLang: 'zh' }).messages[0].content;
+  const en = buildRequest({ ...base, answerLang: 'en' }).messages[0].content;
+  assert.ok(zh.includes('简体中文') && en.includes('Answer in English'));
+  assert.notEqual(zh, en, 'answerLang 没有影响到 system 消息');
+  // 缺省要和 zh 一致，否则老调用方的行为会悄悄变
+  assert.equal(buildRequest({ ...base }).messages[0].content, zh, '缺省回答语言应保持中文');
+});
+
+test('i18n：Markdown 导出的小标题跟着语言走', () => {
+  const rec = {
+    id: 'x',
+    ts: Date.now(),
+    url: 'https://example.com/a',
+    title: 'Doc',
+    domain: 'example.com',
+    selection: 'hello world',
+    mode: 'explain',
+    question: '',
+    answer: 'the answer',
+    model: 'm',
+  };
+  setLocale('zh');
+  const zh = toMarkdown([rec]);
+  assert.ok(zh.includes('选中内容') && zh.includes('回答'), '中文导出缺少中文小标题');
+  assert.ok(zh.includes('解释'), '中文导出的条目标题应使用中文动作名');
+  assert.ok(zh.includes('导出时间'), '中文导出缺少时间行');
+
+  setLocale('en');
+  const en = toMarkdown([rec]);
+  assert.ok(en.includes('Selected text') && en.includes('Answer'), '英文导出缺少英文小标题');
+  assert.ok(en.includes('Explain'), '英文导出的条目标题应使用英文动作名');
+  assert.ok(!/[\u4e00-\u9fff]/.test(en), `英文导出里混进了中文：${en.match(/[\u4e00-\u9fff]+/g)}`);
+
+  const single = buildSingleMarkdown(rec);
+  assert.ok(single.includes('## Selected text') && single.includes('## Answer'));
+  setLocale('zh');
+});
+
+test('i18n：Obsidian 默认文件夹名跟随语言，不是写死的', () => {
+  setLocale('zh');
+  assert.equal(resolveObsidianFolder(AUTO_FOLDER), MESSAGES.zh.appName);
+  setLocale('en');
+  assert.equal(resolveObsidianFolder(AUTO_FOLDER), MESSAGES.en.appName);
+  // 用户填了具体名字就直接用，跟语言无关
+  assert.equal(resolveObsidianFolder('我的笔记'), '我的笔记');
+  // 空串保留「写库根目录」的原意，不能被当成哨兵
+  assert.equal(resolveObsidianFolder(''), '');
+  setLocale('zh');
+});
+
+test('i18n：Notion 报错按状态分开翻译，不能糊成一句', () => {
+  setLocale('zh');
+  const a = notionErrorMessage(401, { message: 'unauthorized' });
+  const b = notionErrorMessage(404, { message: 'not found' });
+  assert.notEqual(a, b, '401 与 404 给了同一句话，用户不知道该改哪里');
+  assert.ok(a.includes('令牌'), '401 应指向令牌');
+  assert.ok(b.includes('页面'), '404 应指向页面分享');
+
+  setLocale('en');
+  const en = notionErrorMessage(404, {});
+  assert.ok(!/[\u4e00-\u9fff]/.test(en), `英文模式下 Notion 报错仍是中文：${en}`);
+  assert.ok(/share|not found/i.test(en), `英文文案没说到点上：${en}`);
+  setLocale('zh');
+});
+
+test('i18n：manifest 的 __MSG_ 键在两种语言里都齐全', () => {
+  const manifest = JSON.parse(fs.readFileSync(path.join(root, 'manifest.json'), 'utf8'));
+  const used = JSON.stringify(manifest).match(/__MSG_([A-Za-z0-9_]+)__/g) || [];
+  const keys = [...new Set(used.map((s) => s.slice(6, -2)))];
+  assert.ok(keys.length >= 2, `manifest 里没有用到 __MSG_，本地化没接上（找到 ${keys.length} 处）`);
+  assert.ok(manifest.default_locale, '用了 __MSG_ 就必须声明 default_locale，否则 Chrome 直接拒绝加载');
+
+  for (const dir of ['en', 'zh_CN']) {
+    const msgs = JSON.parse(fs.readFileSync(path.join(root, `_locales/${dir}/messages.json`), 'utf8'));
+    for (const k of keys) {
+      assert.ok(msgs[k]?.message, `_locales/${dir}/messages.json 缺少 ${k}`);
+    }
+  }
+
+  // 默认语言必须与字典的 DEFAULT_LOCALE 一致，否则「manifest 显示一种语言、界面是另一种」
+  assert.equal(manifest.default_locale, DEFAULT_LOCALE, 'manifest 的 default_locale 与 i18n 的 DEFAULT_LOCALE 不一致');
+});
+
+test('i18n：内容脚本必须先加载字典再加载 content.js（顺序错了就取不到词）', () => {
+  const manifest = JSON.parse(fs.readFileSync(path.join(root, 'manifest.json'), 'utf8'));
+  const js = manifest.content_scripts?.[0]?.js || [];
+  const i18nAt = js.findIndex((f) => f.includes('i18n.core.js'));
+  const contentAt = js.findIndex((f) => f.includes('content/content.js'));
+  assert.ok(i18nAt >= 0, 'content_scripts 里没有 i18n.core.js —— 面板会全部显示成 key 名');
+  assert.ok(contentAt >= 0, 'content_scripts 里没有 content.js');
+  assert.ok(
+    i18nAt < contentAt,
+    `i18n.core.js 必须排在 content.js 之前，当前顺序是 ${JSON.stringify(js)}`
+  );
+
+  const harness = fs.readFileSync(path.join(root, 'tools/harness.html'), 'utf8');
+  const hI18n = harness.indexOf('../lib/i18n.core.js');
+  const hContent = harness.indexOf('../content/content.js');
+  assert.ok(hI18n >= 0, '测试页没有加载字典，e2e 里界面会全是 key 名');
+  assert.ok(hI18n < hContent, '测试页里字典也要排在 content.js 之前，否则与实际加载顺序不一致');
+});
+
+test('i18n：content script 取词必须是同步的（不能为了取词去问后台）', () => {
+  // 异步取词会导致「先按浏览器语言渲染一帧、再闪成设置的语言」
+  assert.ok(contentSrc.includes('globalThis.AI_READER_I18N'), 'content.js 没接上字典');
+  assert.ok(
+    !/settings:get[\s\S]{0,120}language/.test(contentSrc),
+    'content.js 似乎在用消息去后台取语言 —— 那会先渲染错语言再闪一下'
+  );
 });
 
 /* ------------------------------------------------------------------ */

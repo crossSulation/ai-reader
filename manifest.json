@@ -1,8 +1,9 @@
 {
   "manifest_version": 3,
-  "name": "AI 阅读助手 · 划词即问",
-  "version": "1.4.0",
-  "description": "阅读网页文档时选中或双击任意文字，用你自己的大模型即时解释、翻译、追问；结论先行、细节可展开，答案自动存档并可导出 Markdown。",
+  "name": "__MSG_appName__",
+  "version": "1.5.0",
+  "description": "__MSG_appDesc__",
+  "default_locale": "en",
   "minimum_chrome_version": "116",
   "permissions": [
     "storage",
@@ -21,14 +22,15 @@
   "content_scripts": [
     {
       "matches": ["http://*/*", "https://*/*", "file:///*"],
-      "js": ["content/content.js"],
+      "//": "i18n.core.js 必须排在 content.js 之前：它把字典挂到 globalThis，后者同步取词",
+      "js": ["lib/i18n.core.js", "content/content.js"],
       "run_at": "document_idle",
       "all_frames": true
     }
   ],
   "action": {
     "default_popup": "popup/popup.html",
-    "default_title": "AI 阅读助手",
+    "default_title": "__MSG_appName__",
     "default_icon": {
       "16": "icons/icon16.png",
       "32": "icons/icon32.png",
@@ -45,7 +47,7 @@
       "suggested_key": {
         "default": "Alt+Shift+E"
       },
-      "description": "解释当前选中的内容"
+      "description": "__MSG_cmdExplain__"
     }
   },
   "icons": {
