@@ -496,6 +496,118 @@ async function main() {
         `日志：${JSON.stringify(logCopy.slice(-2))}`
       );
     }
+    console.log('\n【13】整页正文：默认不发，开启后要发得准、剪得干净');
+    // 小节【4】那条请求是在默认档位（off）下发的，正好拿来验「默认不外发页面正文」
+    const firstAsk = await cdp.eval(
+      '(window.__port.posted.find((m) => m.type === "ask") || {}).payload'
+    );
+    check(
+      '默认（off）不会把页面正文发出去',
+      firstAsk && firstAsk.pageText === null,
+      `实际：${JSON.stringify(firstAsk && firstAsk.pageText)}`
+    );
+
+    // 切到 always 再走一遍完整路径（换个 URL 重新 bootstrap，等价于用户改完设置后
+    // storage 变更生效——这里用查询参数模拟那次设置变更）
+    await cdp.navigate(`${HARNESS}?pagectx=always`);
+    await sleep(500);
+
+    const built = await cdp.eval(`(() => {
+      const NL = String.fromCharCode(10);
+      const nav = document.createElement('nav');
+      nav.innerHTML = '<ul><li><a href="#a">相关推荐链接甲</a></li><li><a href="#b">相关推荐链接乙</a></li></ul>';
+      const article = document.createElement('article');
+      article.innerHTML = '<h1>理解注意力机制</h1>'
+        + '<p>查询与键的点积决定了每个位置的权重，再经 softmax 归一化。</p>'
+        + '<p>多头注意力把表示空间切成若干子空间，让模型能同时关注不同的关系。</p>'
+        + '<pre>def attn(q, k, v):' + NL + '    return softmax(q @ k.T) @ v</pre>';
+      const footer = document.createElement('footer');
+      footer.innerHTML = '<ul><li>版权所有 · 页脚噪音</li></ul>';
+      document.body.append(nav, article, footer);
+      const h = document.querySelector('h1');
+      return { nav: !!nav, article: !!article, heading: h ? h.textContent : '' };
+    })()`);
+    check('测试页已造出「导航 + 正文 + 页脚」结构', !!built.article && !!built.nav);
+
+    const p2 = await cdp.eval(`(() => { const r = document.getElementById('para').getBoundingClientRect();
+      return { left: r.left, top: r.top, right: r.right, bottom: r.bottom }; })()`);
+    await cdp.dragSelect(
+      { x: p2.left + 6, y: p2.top + 10 },
+      { x: p2.right - 6, y: p2.bottom - 10 }
+    );
+    await sleep(300);
+
+    const chip2 = await cdp.eval(`(() => {
+      const sr = (document.querySelector('arc-reader-ui') || {}).shadowRoot;
+      if (!sr) return null;
+      const c = sr.querySelector('.chip');
+      if (!c) return null;
+      const r = c.getBoundingClientRect();
+      return { x: r.left + r.width / 2, y: r.top + r.height / 2, label: c.textContent };
+    })()`);
+    check('切档位后气泡照常可用', !!chip2);
+    if (chip2) {
+      await cdp.clickAt(chip2.x, chip2.y);
+      await sleep(400);
+    }
+
+    const payload2 = await cdp.eval(
+      '(window.__port.posted.find((m) => m.type === "ask") || {}).payload'
+    );
+    const page = payload2 && payload2.pageText;
+    check(
+      'always 档确实把整页正文随请求发了出去',
+      !!(page && page.text),
+      `实际：${JSON.stringify(page).slice(0, 140)}`
+    );
+    if (page && page.text) {
+      check('正文抽到了文章内容', page.text.includes('查询与键的点积'), '选错了容器');
+      check(
+        '小标题带上了 Markdown 骨架',
+        /^# 理解注意力机制/m.test(page.text),
+        `正文开头：${JSON.stringify(page.text.slice(0, 60))}`
+      );
+      check(
+        '代码块保留了换行与缩进',
+        page.text.includes('def attn(q, k, v):\n    return'),
+        'pre 被压成了一行 —— 代码就没法看了'
+      );
+      check('导航里的纯链接块被剪掉', !page.text.includes('相关推荐链接'), '导航噪音进了正文');
+      check('页脚被整块剪掉', !page.text.includes('页脚噪音'), 'footer 噪音进了正文');
+      check(
+        '回报了正文字数（面板据此提示）',
+        page.chars > 0 && page.totalChars >= page.chars,
+        JSON.stringify({ chars: page.chars, totalChars: page.totalChars })
+      );
+    }
+
+    // 面板提示：正文被截断时必须说出来，否则用户以为模型看到了全文
+    const reqId2 = await cdp.eval(
+      '(window.__port.posted.find((m) => m.type === "ask") || {}).reqId'
+    );
+    if (reqId2) {
+      const startMsg = {
+        type: 'start',
+        reqId: reqId2,
+        model: 'test',
+        contextInfo: {
+          budget: 30000,
+          totalTurns: 0,
+          fullTurns: 0,
+          summarizedTurns: 0,
+          omittedTurns: 0,
+          pageText: { chars: 1200, totalChars: 9000, clipped: true },
+        },
+      };
+      await cdp.eval(`window.__emit(${JSON.stringify(startMsg)})`);
+      await sleep(200);
+      snap = await cdp.eval(SNAPSHOT);
+      check(
+        '正文被截断时面板明确提示',
+        /整页正文过长/.test(snap.ctxNote || '') && /1200/.test(snap.ctxNote || ''),
+        `ctxNote=${JSON.stringify(snap.ctxNote)}`
+      );
+    }
   } finally {
     await close();
   }

@@ -230,13 +230,18 @@ function preflight(manifest, pkg) {
     if (remote) fail(`${path.relative(ROOT, f)} 引用了远程脚本：${remote[0]}（MV3 禁止远程代码）`);
   }
 
-  // 6. 内容脚本的加载顺序：字典必须排在 content.js 之前，内容脚本不是 ESM，import 不进来
+  // 6. 内容脚本的加载顺序：*.core.js 是经典脚本（内容脚本不是 ESM，import 不进来），
+  //    它们靠先执行、往 globalThis 上挂东西来供 content.js 同步取用 —— 顺序错了界面就没文案。
+  //    整个包一起坏，所以这里逐个点名，而不是只查有没有后缀对得上。
+  const CORE_SCRIPTS = ['lib/i18n.core.js', 'lib/page-text.core.js'];
   for (const cs of manifest.content_scripts || []) {
     const js = cs.js || [];
-    const dict = js.findIndex((f) => f.endsWith('i18n.core.js'));
     const main = js.findIndex((f) => f.includes('content/content.js'));
-    if (main > -1 && (dict === -1 || dict > main)) {
-      fail('content_scripts 必须先加载 lib/i18n.core.js 再加载 content/content.js，顺序错了界面就没有文案');
+    if (main === -1) continue;
+    for (const core of CORE_SCRIPTS) {
+      const at = js.findIndex((f) => f.endsWith(core));
+      if (at === -1) fail(`content_scripts 里缺少 ${core}，内容脚本会取不到它挂载的能力`);
+      else if (at > main) fail(`content_scripts 里 ${core} 排在 content/content.js 之后，顺序错了`);
     }
   }
 

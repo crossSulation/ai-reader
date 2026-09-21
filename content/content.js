@@ -73,6 +73,9 @@
     quickAskMode: 'explain',
     // 分层回答：结论层先行，展开层折叠
     layered: true,
+    // 页面上下文：'off' | 'auto' | 'always'。内容脚本拿它决定要不要去遍历 DOM
+    // 采整页正文（判定逻辑在 lib/page-text.js 的 shouldCollect）
+    pageContext: 'off',
   };
 
   const PANEL_MIN_WIDTH = 300;
@@ -331,6 +334,95 @@
       // 坐标是视口相对的，页面一滚就作废；DOM 节点只要没被页面脚本重建就仍然有效。
       anchor: { node: range.startContainer, offset: range.startOffset },
     };
+  }
+
+  /* ================================================================
+   * 整页正文采集（读文档时「上文提到的那个概念」才有处可查）
+   *
+   * 只在设置项 pageContext 打开时才跑：遍历整个 DOM 不便宜，而且把页面正文
+   * 发到模型服务是用户自己的隐私决定，绝不能默认发生。
+   *
+   * 算法（去嵌套块 / 选主内容容器 / 拼装 / 截断）全在 lib/page-text.js —— 策略
+   * 必须留在能 import 的一侧，这是本项目的老规矩。这里只负责把 DOM 翻译成朴素数据：
+   * 取文本、判可见性、算链接密度。
+   * ================================================================ */
+
+  const PAGE_TEXT = globalThis.AI_READER_PAGE_TEXT;
+
+  /** 采集结果的短时缓存：同一页面上连续追问不必每轮重走一遍 DOM */
+  const PAGE_CACHE_MS = 60000;
+  let pageCache = { url: '', at: 0, data: null };
+
+  function collectBlocks() {
+    if (!PAGE_TEXT) return [];
+    const out = [];
+    let seen = 0;
+    let overflow = false;
+
+    const walk = (el, path, depth) => {
+      if (overflow || depth > PAGE_TEXT.MAX_DEPTH) return;
+      if (++seen > PAGE_TEXT.MAX_ELEMENTS) {
+        overflow = true;
+        return;
+      }
+      const tag = el.tagName;
+      if (!tag || PAGE_TEXT.NOISE_TAGS.has(tag)) return;
+      const attr = (name) => (el.getAttribute ? el.getAttribute(name) : null);
+      if (el.hidden || attr('aria-hidden') === 'true') return;
+      const role = attr('role');
+      if (role && PAGE_TEXT.NOISE_ROLES.has(role.toLowerCase())) return;
+
+      const lower = tag.toLowerCase();
+      if (PAGE_TEXT.BLOCK_TAGS.has(lower)) {
+        const raw = (el.innerText || '').trim();
+        if (raw && raw.length <= PAGE_TEXT.MAX_BLOCK_CHARS) {
+          // 链接密度：导航、目录、相关阅读的文本几乎全是 <a>，正文段落里链接占比很低。
+          // 这条比标签黑名单可靠得多 —— 大量站点的导航根本不用 <nav>。
+          const anchors = el.getElementsByTagName('a');
+          let linkChars = 0;
+          for (let i = 0; i < anchors.length; i++) linkChars += (anchors[i].innerText || '').length;
+          const density = raw.length ? linkChars / raw.length : 1;
+          // 没有 rect 就是不可见（折叠、display:none、模板节点）
+          if (density <= PAGE_TEXT.LINK_DENSITY_LIMIT && el.getClientRects().length) {
+            out.push({ p: path, t: lower, x: raw, l: linkChars });
+          }
+        }
+      }
+
+      const kids = el.children;
+      for (let i = 0; i < kids.length; i++) {
+        walk(kids[i], path ? `${path}.${i}` : String(i), depth + 1);
+      }
+    };
+
+    const root = document.body || document.documentElement;
+    if (root) walk(root, '', 0);
+    return out;
+  }
+
+  /**
+   * 本轮要带的整页正文。
+   * @returns {?object} lib/page-text.js build() 的结果；不需要或采不到时返回 null
+   */
+  function pageTextFor(contextText) {
+    if (!PAGE_TEXT) return null;
+    const setting = (settings && settings.pageContext) || 'off';
+    if (!PAGE_TEXT.shouldCollect(setting, contextText)) return null;
+
+    const url = location.href;
+    const now = Date.now();
+    if (pageCache.url === url && now - pageCache.at < PAGE_CACHE_MS) return pageCache.data;
+
+    let data = null;
+    try {
+      const built = PAGE_TEXT.build(collectBlocks(), { max: PAGE_TEXT.PAGE_TEXT_MAX });
+      data = built.text ? built : null;
+    } catch {
+      // 采集失败不该影响问答本身：这一轮退化成「只有所在段落」
+      data = null;
+    }
+    pageCache = { url, at: now, data };
+    return data;
   }
 
   /* ================================================================
@@ -1274,25 +1366,45 @@
   }
 
   /**
-   * 本轮请求的上下文压缩说明。
+   * 本轮请求的上下文说明：历史压缩情况 + 整页正文带了多少。
    *
-   * 历史被压成摘要时，用户有权知道「模型现在看到的对话不完整」——
-   * 否则模型答不出「第一轮说的那个」时，用户只会以为它变笨了。
-   * 没有任何压缩时返回 null，时间线保持安静。
+   * 这两件事都关系到「模型看到的和你以为它看到的不一样」：
+   * 历史被压成摘要时，用户有权知道对话不完整；正文被截断或带上时，
+   * 用户有权知道自己发出去了多少页面内容（这是隐私，也是钱）。
+   * 都没有的时候返回 null，时间线保持安静。
    */
   function buildContextNote(turn) {
     const info = turn.contextInfo;
     if (!info) return null;
     const summarized = info.summarizedTurns || 0;
     const omitted = info.omittedTurns || 0;
-    if (summarized <= 0 && omitted <= 0) return null;
+    const page = info.pageText;
 
-    const bits = [t('ctxSummaryTurns', { n: summarized })];
-    if (omitted > 0) bits.push(t('ctxOmittedTurns', { n: omitted }));
+    const lines = [];
+    if (summarized > 0 || omitted > 0) {
+      const bits = [t('ctxSummaryTurns', { n: summarized })];
+      if (omitted > 0) bits.push(t('ctxOmittedTurns', { n: omitted }));
+      lines.push(t('ctxNote', { bits: bits.join(separator()) }));
+    }
+    if (page && page.chars > 0) {
+      lines.push(
+        page.clipped
+          ? t('ctxPageClipped', { n: page.chars, total: page.totalChars })
+          : t('ctxPageNote', { n: page.chars })
+      );
+    }
+    if (!lines.length) return null;
+
     const wrap = document.createElement('div');
     wrap.className = 'ctx-note';
-    wrap.title = t('ctxNoteTitle', { budget: info.budget, full: info.fullTurns });
-    wrap.textContent = t('ctxNote', { bits: bits.join(separator()) });
+    // 标题只讲历史压缩，所以只在真的压过历史时才挂
+    if (summarized > 0 || omitted > 0) {
+      wrap.title = t('ctxNoteTitle', { budget: info.budget, full: info.fullTurns });
+    }
+    for (let i = 0; i < lines.length; i++) {
+      if (i) wrap.appendChild(document.createElement('br'));
+      wrap.appendChild(document.createTextNode(lines[i]));
+    }
     return wrap;
   }
 
@@ -1552,6 +1664,9 @@
           context,
           page: session.page,
           history,
+          // 整页正文（只在设置项开启时才有）。采集成本在这里付一次，
+          // pageTextFor 内部按 URL 做了短时缓存，连续追问不会反复走 DOM。
+          pageText: pageTextFor(context),
         },
       });
     } catch (err) {
@@ -1596,9 +1711,15 @@
     switch (msg.type) {
       case 'start':
         turn.model = msg.model || '';
-        // SW 在组装请求时算出的历史压缩情况（budget/压缩轮数）。有被压缩时
-        // 才值得在时间线里插一条说明 —— 没压缩时保持安静。
-        if (msg.contextInfo && (msg.contextInfo.summarizedTurns > 0 || msg.contextInfo.omittedTurns > 0)) {
+        // SW 在组装请求时算出的上下文情况（历史压缩轮数 + 整页正文用量）。
+        // 只有「确实压缩了历史」或「确实带上了正文」才值得在时间线里插一条说明 ——
+        // 两者都没有时保持安静，否则每一轮都多一行废话。
+        if (
+          msg.contextInfo &&
+          (msg.contextInfo.summarizedTurns > 0 ||
+            msg.contextInfo.omittedTurns > 0 ||
+            msg.contextInfo.pageText)
+        ) {
           turn.contextInfo = msg.contextInfo;
           if (msg.reqId === session.activeId) renderTimeline();
         }

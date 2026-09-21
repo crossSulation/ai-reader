@@ -17,7 +17,7 @@ import { fileURLToPath } from 'node:url';
 
 import { buildEndpoint, originPatternOf } from '../lib/llm.js';
 import { buildMessages, buildRequest, MODES, LAYER_MARKER, splitLayered, createLayerSplitter, TOTAL_CHAR_BUDGET, RECENT_TURNS_FULL, HISTORY_SUMMARY_TITLE, systemPrompt } from '../lib/prompts.js';
-import { recordId, toMarkdown, domainOf, AUTO_FOLDER } from '../lib/store.js';
+import { recordId, toMarkdown, domainOf, AUTO_FOLDER, DEFAULT_SETTINGS } from '../lib/store.js';
 import {
   t,
   getLocale,
@@ -45,6 +45,22 @@ import {
   notionErrorMessage,
   notionTitleOf,
 } from '../lib/exporters.js';
+import {
+  build as buildPageText,
+  pickRoot,
+  pruneNested,
+  ancestorsOf,
+  isUnder,
+  renderBlock,
+  shouldCollect,
+  pageMax,
+  PAGE_TEXT_MAX,
+  BLOCK_TAGS,
+  NOISE_TAGS,
+  NOISE_ROLES,
+  LINK_DENSITY_LIMIT,
+  AUTO_TRIGGER_BELOW,
+} from '../lib/page-text.js';
 
 /**
  * 先把语言钉在中文上。
@@ -1403,6 +1419,264 @@ test('i18n：content script 取词必须是同步的（不能为了取词去问�
     !/settings:get[\s\S]{0,120}language/.test(contentSrc),
     'content.js 似乎在用消息去后台取语言 —— 那会先渲染错语言再闪一下'
   );
+});
+
+/* ------------------------------------------------------------------ */
+/* 整页正文（读文档时「上文提到的那个概念」才有处可查）                 */
+/* ------------------------------------------------------------------ */
+
+test('正文抽取：祖先路径只给严格前缀，不含代表 body 的空串', () => {
+  assert.deepEqual(ancestorsOf('0.2.3'), ['0.2', '0']);
+  assert.deepEqual(ancestorsOf('0.2'), ['0']);
+  assert.deepEqual(ancestorsOf('0'), []);
+  // 空串代表 body 整体，让它参与打分永远是最高分 —— 那样等于根本没筛选
+  assert.ok(!ancestorsOf('0.1.2.3').includes(''), '祖先里混进了空串，选容器会被 body 吃掉');
+});
+
+test('正文抽取：路径前缀比较不能把 0.1 当成 0.10 的祖先', () => {
+  assert.ok(isUnder('0.1.5', '0.1'), '0.1.5 应当在 0.1 之下');
+  assert.ok(isUnder('0.1', '0.1'), '自己也算在自己之下');
+  assert.ok(!isUnder('0.10', '0.1'), '0.10 不是 0.1 的子节点（字符串前缀陷阱）');
+});
+
+test('正文抽取：去掉祖先块，同一段内容不重复发两遍', () => {
+  const nested = [
+    { p: '0', t: 'li', x: '外层列表项的文本', l: 0 },
+    { p: '0.0', t: 'p', x: '外层列表项的文本', l: 0 },
+  ];
+  const kept = pruneNested(nested);
+  assert.equal(kept.length, 1, `<li><p> 结构应当只留最内层，实际留下 ${kept.length} 块`);
+  assert.equal(kept[0].t, 'p', '留下的应当是最内层的那个');
+
+  const flat = [
+    { p: '0', t: 'p', x: 'a', l: 0 },
+    { p: '1', t: 'p', x: 'b', l: 0 },
+  ];
+  assert.equal(pruneNested(flat).length, 2, '没有嵌套时一个块都不能少');
+});
+
+test('正文抽取：主内容容器选承载正文最多的那一支，导航与页脚被排除', () => {
+  const blocks = [
+    { p: '0.0', t: 'li', x: '首页导航项', l: 4 },
+    { p: '1.0.0', t: 'h1', x: '文档标题', l: 0 },
+    { p: '1.0.1', t: 'p', x: '正文内容'.repeat(60), l: 0 },
+    { p: '2.0', t: 'li', x: '版权页脚', l: 4 },
+  ];
+  assert.equal(pickRoot(blocks), '1', '应当选中包住正文的那一支，而不是整个 body');
+
+  const out = buildPageText(blocks, { max: PAGE_TEXT_MAX }).text;
+  assert.ok(out.includes('文档标题'), '正文标题丢了');
+  assert.ok(!out.includes('首页导航项'), '导航项不该进正文');
+  assert.ok(!out.includes('版权页脚'), '页脚不该进正文');
+});
+
+test('正文抽取：没找到明显主体时退回全部块，而不是给出空正文', () => {
+  const flat = [
+    { p: '0', t: 'p', x: '第一段', l: 0 },
+    { p: '1', t: 'p', x: '第二段', l: 0 },
+  ];
+  assert.equal(pickRoot(flat), '', '没有共同祖先前缀时应当返回空串');
+  const out = buildPageText(flat, { max: PAGE_TEXT_MAX });
+  assert.ok(out.text.includes('第一段') && out.text.includes('第二段'), '退回全部块时内容不能丢');
+});
+
+test('正文抽取：标题与列表带 Markdown 骨架，pre 的缩进保留', () => {
+  assert.equal(renderBlock({ t: 'h2', x: '小节' }), '## 小节');
+  assert.equal(renderBlock({ t: 'li', x: '条目' }), '- 条目');
+  assert.equal(renderBlock({ t: 'p', x: '  多余   空白 ' }), '多余 空白');
+  assert.equal(
+    renderBlock({ t: 'pre', x: 'a\n  b\n\n\n\nc' }),
+    'a\n  b\n\nc',
+    'pre 的缩进是信息，不能被压掉'
+  );
+});
+
+test('正文抽取：超长时截断并如实标注，且至少给出开头', () => {
+  const long = Array.from({ length: 40 }, (_, i) => ({
+    p: `1.${i}`,
+    t: 'p',
+    x: `第 ${i} 段` + 'x'.repeat(100),
+    l: 0,
+  }));
+  const r = buildPageText(long, { max: 300 });
+  assert.equal(r.clipped, true, '超过上限却没标截断');
+  assert.ok(r.text.length <= 300, `截断后仍然超长：${r.text.length}`);
+  assert.ok(r.totalChars > r.text.length, 'totalChars 要报过滤后正文的真实总量');
+  assert.ok(r.text.length > 0, '一个字都没留下 —— 用户会以为功能没生效');
+
+  // 第一个块就超长时也要留开头，而不是直接返回空串
+  const huge = buildPageText([{ p: '0', t: 'p', x: 'y'.repeat(5000), l: 0 }], { max: 100 });
+  assert.equal(huge.text.length, 100);
+  assert.equal(huge.clipped, true);
+});
+
+test('正文抽取：chars 与 totalChars 必须同口径（否则面板会自相矛盾）', () => {
+  const blocks = [
+    { p: '1.0', t: 'h2', x: '标题', l: 0 },
+    { p: '1.1', t: 'li', x: '条目', l: 0 },
+    { p: '1.2', t: 'p', x: '正文', l: 0 },
+  ];
+  const r = buildPageText(blocks, { max: 10000 });
+  assert.equal(r.clipped, false);
+  assert.equal(r.chars, r.text.length, 'chars 就是真正发出去的长度');
+  assert.equal(
+    r.chars,
+    r.totalChars,
+    '没截断时两个字数必须相等 —— 渲染会加 # / - 前缀，只数原始文本就会算出「已带上 127 字（共约 122 字）」'
+  );
+});
+
+test('正文抽取：空输入安全返回，不抛错', () => {
+  for (const input of [[], null, undefined, [{ p: '0', t: 'p', x: '' }]]) {
+    const r = buildPageText(input, { max: 1000 });
+    assert.equal(r.text, '');
+    assert.equal(r.clipped, false);
+  }
+});
+
+test('正文抽取：上限受总预算约束，最多占四成且不低于保底', () => {
+  assert.equal(pageMax(30000), PAGE_TEXT_MAX, '预算充足时用硬上限');
+  assert.equal(pageMax(2000), 800, '预算小时要按比例让路，别把历史挤没');
+  assert.equal(pageMax(), PAGE_TEXT_MAX, '没给预算时退回硬上限');
+  assert.ok(pageMax(100) >= 500, '预算极小也要有保底，否则等于没开');
+  assert.ok(pageMax(30000) < 30000, '正文绝不能吃掉整个预算');
+});
+
+test('正文抽取：三档设置各自的触发条件', () => {
+  const thin = '短段落';
+  const fat = 'x'.repeat(AUTO_TRIGGER_BELOW + 50);
+  assert.equal(shouldCollect('off', thin), false, 'off 档绝不能采集');
+  assert.equal(shouldCollect('off', fat), false, 'off 档绝不能采集');
+  assert.equal(shouldCollect('auto', thin), true, 'auto 档在段落太短时要兜底');
+  assert.equal(shouldCollect('auto', fat), false, 'auto 档在段落够用时不该多发内容出去');
+  assert.equal(shouldCollect('always', thin), true);
+  assert.equal(shouldCollect('always', fat), true);
+  assert.equal(shouldCollect(undefined, thin), false, '设置项缺失时按最保守处理');
+});
+
+test('载荷：整页正文排在「所在段落」与「选中的内容」之间', () => {
+  const { messages, contextInfo } = buildRequest({
+    mode: 'explain',
+    selection: '注意力机制',
+    context: '一段背景',
+    page: { title: 'T', url: 'https://example.com' },
+    pageText: { text: '整页正文内容在这里', totalChars: 9 },
+  });
+  const user = messages[messages.length - 1].content;
+  const atCtx = user.indexOf('【所在段落】');
+  const atPage = user.indexOf('【整页正文');
+  const atSel = user.indexOf('【用户选中的内容】');
+  assert.ok(atPage > atCtx, '整页正文应当排在所在段落之后（背景由近及远）');
+  assert.ok(atSel > atPage, '正文不能把选中的内容挤到前面 —— 那才是要处理的对象');
+  assert.ok(user.includes('整页正文内容在这里'));
+  assert.equal(contextInfo.pageText.clipped, false);
+  assert.equal(contextInfo.pageText.chars, 9);
+});
+
+test('载荷：没带正文时 contextInfo.pageText 为 null（面板据此保持安静）', () => {
+  const { contextInfo, messages } = buildRequest({ mode: 'explain', selection: 'x' });
+  assert.equal(contextInfo.pageText, null);
+  assert.ok(!messages[messages.length - 1].content.includes('【整页正文'));
+});
+
+test('载荷：正文超出上限时截断，并明确告诉模型「这不是全文」', () => {
+  const text = 'z'.repeat(6000);
+  const { messages, contextInfo } = buildRequest({
+    mode: 'explain',
+    selection: 'x',
+    budget: 10000, // 四成 = 4000
+    pageText: { text, totalChars: 50000 },
+  });
+  const user = messages[messages.length - 1].content;
+  assert.ok(contextInfo.pageText.clipped, '截断了却没标');
+  assert.equal(contextInfo.pageText.totalChars, 50000, '要报真实总量，而不是截断后的长度');
+  assert.ok(user.length < 10000, `整条消息超预算了：${user.length}`);
+  assert.ok(
+    /正文未能全部放入/.test(user),
+    '没告诉模型它看到的是删减版 —— 它会当成全文去总结'
+  );
+});
+
+test('载荷：正文自身的开销算进预算，历史压缩据此让路', () => {
+  const lenOf = (r) => r.messages.map((m) => m.content).join('').length;
+  const base = buildRequest({ mode: 'explain', selection: 'x', budget: 30000 });
+  const withPage = buildRequest({
+    mode: 'explain',
+    selection: 'x',
+    budget: 30000,
+    pageText: { text: 'w'.repeat(7000), totalChars: 7000 },
+  });
+  assert.ok(
+    lenOf(withPage) > lenOf(base),
+    '带上正文后总长没变 —— 说明它没进 baseCost，预算不变式就是假的'
+  );
+  assert.ok(lenOf(withPage) < 30000, '带上正文后超出了预算');
+});
+
+test('载荷：正文也接受裸字符串（老调用方/测试的简便形态）', () => {
+  const { contextInfo, messages } = buildRequest({
+    mode: 'explain',
+    selection: 'x',
+    pageText: '纯字符串正文',
+  });
+  assert.ok(messages[messages.length - 1].content.includes('纯字符串正文'));
+  assert.equal(contextInfo.pageText.chars, 6);
+});
+
+test('正文抽取：内容脚本同步拿到算法，且没有为了正文去问后台', () => {
+  assert.ok(contentSrc.includes('globalThis.AI_READER_PAGE_TEXT'), 'content.js 没接上正文抽取');
+  assert.ok(
+    !/settings:get[\s\S]{0,160}pageText/.test(contentSrc),
+    'content.js 似乎在用消息去后台取正文 —— 正文只能在这一侧采（后台没有 DOM）'
+  );
+});
+
+test('正文抽取：两个 core 脚本都必须排在 content.js 之前', () => {
+  const manifest = JSON.parse(fs.readFileSync(path.join(root, 'manifest.json'), 'utf8'));
+  const js = manifest.content_scripts?.[0]?.js || [];
+  const contentAt = js.findIndex((f) => f.includes('content/content.js'));
+  assert.ok(contentAt >= 0, 'content_scripts 里没有 content.js');
+  for (const core of ['lib/i18n.core.js', 'lib/page-text.core.js']) {
+    const at = js.findIndex((f) => f.includes(core));
+    assert.ok(at >= 0, `manifest 里没有加载 ${core}`);
+    assert.ok(at < contentAt, `${core} 必须排在 content.js 之前，当前顺序是 ${JSON.stringify(js)}`);
+  }
+
+  const harness = fs.readFileSync(path.join(root, 'tools/harness.html'), 'utf8');
+  assert.ok(
+    harness.indexOf('../lib/page-text.core.js') < harness.indexOf('../content/content.js'),
+    '测试页也要先加载 page-text.core.js，否则 e2e 跑的环境和真实环境不一致'
+  );
+});
+
+test('正文抽取：噪音名单与阈值只有一份，content.js 不许另抄一套', () => {
+  assert.ok(NOISE_TAGS.has('NAV') && NOISE_TAGS.has('FOOTER'), '噪音标签名单里没有 nav / footer');
+  assert.ok(NOISE_ROLES.has('navigation'), 'ARIA 地标名单里没有 navigation');
+  assert.ok(BLOCK_TAGS.has('p') && BLOCK_TAGS.has('li'), '正文块标签名单缺基础项');
+  assert.ok(LINK_DENSITY_LIMIT > 0 && LINK_DENSITY_LIMIT < 1, '链接密度阈值必须在 0~1 之间');
+
+  for (const name of ['NOISE_TAGS', 'NOISE_ROLES', 'BLOCK_TAGS', 'LINK_DENSITY_LIMIT', 'PAGE_TEXT_MAX']) {
+    assert.ok(
+      contentSrc.includes(`PAGE_TEXT.${name}`),
+      `content.js 没有用 PAGE_TEXT.${name}，像是自己另抄了一份常量`
+    );
+  }
+  assert.ok(
+    !/const\s+(NOISE_TAGS|BLOCK_TAGS|LINK_DENSITY_LIMIT)\s*=/.test(contentSrc),
+    'content.js 里出现了这些常量的定义 —— 它们只能留在 lib/page-text.core.js'
+  );
+});
+
+test('正文抽取：默认关闭，三档都能在设置页里选到，且链路完整', () => {
+  assert.equal(DEFAULT_SETTINGS.pageContext, 'off', '页面正文外发绝不能默认开');
+  for (const v of ['off', 'auto', 'always']) {
+    assert.ok(optionsJs.includes(`['${v}', t('optPageCtx`), `设置页缺少 ${v} 档位`);
+  }
+  assert.ok(optionsJs.includes("$('#pageContext').value"), '设置页没有回填当前档位');
+  assert.ok(optionsJs.includes('pageContext: '), '设置页读表单时漏了 pageContext');
+  assert.ok(swSrc.includes('pageText: payload.pageText'), 'service worker 没有把正文透传给 buildRequest');
+  assert.ok(contentSrc.includes('pageText: pageTextFor(context)'), '内容脚本没有把正文随请求发出');
+  assert.ok(optionsJs.includes("persistQuiet({ pageContext:"), '改档位没有立即落盘');
 });
 
 /* ------------------------------------------------------------------ */

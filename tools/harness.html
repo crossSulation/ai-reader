@@ -36,7 +36,7 @@ for (const type of ['mousedown', 'mouseup', 'click']) {
 
 /* chrome.* 桩：content script 需要的几个能力。
    设置可以用查询参数覆盖，方便一个页面覆盖多种交互配置：
-     ?trigger=off&dblclick=0&layered=0&uilang=en
+     ?trigger=off&dblclick=0&layered=0&uilang=en&pagectx=always
    uilang=auto（默认）时会去问 chrome.i18n.getUILanguage()，用 lang 参数模拟浏览器语言 */
 const qs = new URLSearchParams(location.search);
 window.__settings = {
@@ -50,6 +50,8 @@ window.__settings = {
   quickAskMode: qs.get('quickask') || 'explain',
   layered: qs.get('layered') !== '0',
   language: qs.get('uilang') || 'auto',
+  // 整页正文：'off'（默认）| 'auto' | 'always'
+  pageContext: qs.get('pagectx') || 'off',
 };
 
 window.__port = { posted: [], onMessage: null, onDisconnect: null, disconnect() {} };
@@ -90,9 +92,10 @@ window.chrome = {
   },
 };
 </script>
-<!-- 字典必须排在 content.js 之前：它把 t() 挂到 globalThis，后者同步取词。
-     这与 manifest 的 content_scripts 顺序一致，别调换。 -->
+<!-- 两个 *.core.js 必须排在 content.js 之前：它们是经典脚本，把界面字典与正文抽取算法
+     挂到 globalThis，后者同步取用。这与 manifest 的 content_scripts 顺序一致，别调换。 -->
 <script src="../lib/i18n.core.js"></script>
+<script src="../lib/page-text.core.js"></script>
 <script src="../content/content.js"></script>
 </body>
 </html>

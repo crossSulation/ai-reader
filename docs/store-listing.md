@@ -55,6 +55,8 @@ Select any text on a page to ask your own LLM: explain, translate, follow up. An
 · 答案在右侧全高面板里展开，不遮挡正文；面板宽度可拖，会自动记住
 · 结论先行：第一屏只给一句话结论和 2~3 条要点，原理、例子、易错点收在「展开细节」后面，想看再点开
 · 自动带上你所在段落作为背景，模型知道你在读什么，不会答非所问
+· 读长文档时，可以把「页面上下文」开到带上整页正文（导航栏、侧栏、页脚、评论会自动剔除），
+  问「上面提到的那个概念是什么」也能答准；该选项默认关闭，只有你自己打开后才生效
 · 多轮追问有上下文预算，聊多久都不会把请求撑爆；历史被压缩时会明确告诉你
 · 每条回答都能「回看原文」，一键跳回页面上当时划词的位置
 
@@ -71,7 +73,9 @@ Obsidian（不需要装插件，填个库名就能用）或 Notion（用你自�
 
 【隐私】
 不提问就不会有任何内容离开你的浏览器；只在你主动划词提问时，选中的文字、所在段落和页面
-标题才会发给你自己配置的模型服务商。不收集浏览历史、不读取其他标签页、不含任何统计代码。
+标题才会发给你自己配置的模型服务商。把当前页面正文一并发送的「页面上下文」是**默认关闭**的
+可选项，必须由你自己在设置里打开，且只在提问的那一刻读取当前页面。不收集浏览历史、
+不读取其他标签页、不做后台预采集、不含任何统计代码。
 
 【不支持的页面】
 浏览器内置 PDF 阅读器与 chrome:// 内部页面（浏览器不允许任何扩展在这些页面运行）。
@@ -96,6 +100,11 @@ context was compressed and can jump back to the exact spot you selected.
 
 The whole interface is available in English and Chinese, detected from your browser
 language. Answers come back in the same language as the interface.
+
+Reading a long document? An optional "Page context" setting lets the model see the page's
+main text too (navigation, sidebars, footers and comments are stripped out), so questions
+like "what was that concept mentioned above?" get a real answer. It is **off by default** —
+nothing but your selection and its paragraph leaves your browser until you turn it on.
 
 Bring your own key: the extension has no server and provides no model quota. Paste your
 own API key (DeepSeek, Moonshot/Kimi, OpenAI, Anthropic, or any OpenAI-compatible
@@ -145,7 +154,7 @@ Chrome 会先问「你的扩展是否会收集或使用用户数据」，**必�
 | 表单问题 | 怎么填 |
 |---|---|
 | Does your extension collect or use user data? | **Yes** |
-| 收集哪些类别？ | 勾选 **Website content**（用户选中的文字与所在段落）。其余（PII、健康、金融、身份认证信息、个人通讯、位置、网页历史、用户活动）**一律不勾** |
+| 收集哪些类别？ | 勾选 **Website content**（用户选中的文字、所在段落；以及用户在设置里开启「页面上下文」后的当前页面正文）。其余（PII、健康、金融、身份认证信息、个人通讯、位置、网页历史、用户活动）**一律不勾** |
 | 数据用途 | 勾选 **App functionality**（提供扩展的核心功能，即把选中的文字交给用户配置的模型以生成回答）。**不勾** Advertising、Analytics、Personalization、Creditworthiness 等 |
 | 是否出售数据给第三方？ | **No** |
 | 是否将数据用于与扩展单一用途无关的目的？ | **No** |
@@ -161,6 +170,16 @@ Chrome 会先问「你的扩展是否会收集或使用用户数据」，**必�
 - 数据直接写入**用户自己的** Notion 工作区，走 Notion 官方 API，**不经过开发者服务器**（本扩展无服务端）；
 - Obsidian 路径通过 `obsidian://` 交给本机应用，内容不出本机；
 - 开发者无法访问这些数据。
+
+**关于「页面上下文」这条数据流向**（同样建议主动写进备注）：
+
+- 该选项**默认关闭**，出厂即「仅所在段落」；不会有任何页面正文在用户未开启时被发送；
+- 开启后也只在**用户点击提问的那一刻**读取，且只读当前标签页的当前页面，
+  不做后台预采集、不做定时上传、不读其他标签页或浏览历史；
+- 抽取时会主动剔除导航、侧栏、页脚、评论区等噪音，长度上限 8000 字（超出部分不发送，
+  界面会明确提示已截断）；
+- 数据流向与选中内容完全一致：直接发往用户自己配置的模型服务商，不经过开发者服务器；
+- 用户可随时在设置页改回「仅所在段落」以停止该行为。
 
 ## 五、审核测试说明（Chrome「Notes for certification」/ Edge「Notes for certification」）
 
@@ -216,7 +235,15 @@ Chrome 会先问「你的扩展是否会收集或使用用户数据」，**必�
 
 ## 七、版本更新说明（Release notes）
 
-每个版本提交时填，用户会在更新后看到。示例（1.5.0）：
+每个版本提交时填，用户会在更新后看到。示例（1.6.0）：
+
+```
+新增：设置页可开启「页面上下文」，读长文档时把整页正文也作为回答背景（导航、侧栏、页脚会自动
+剔除，最多 8000 字），问「上面提到的那个概念」也能答准。该选项默认关闭，只有你自己打开后才生效；
+正文过长被截断时面板会明确提示。
+```
+
+上一个版本的示例（1.5.0）：
 
 ```
 新增：界面中英双语，自动跟随浏览器语言（也可在设置页手动指定）；扩展名称与描述随系统语言显示；

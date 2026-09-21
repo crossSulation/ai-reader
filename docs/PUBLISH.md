@@ -128,6 +128,9 @@ node tools/make_screenshots.mjs         # 产出 store/screenshot-*.png（1280×
    核心论点是「双击选词/快捷键路径拿不到 activeTab 授权，必须在 content_scripts 声明」。
 3. **不要隐瞒数据传输**。选中的文字确实会发给第三方（用户自己配的模型商），Data usage
    必须如实勾「Website content」+「App functionality」。抽查发现隐瞒的下架且封号。
+   1.6.0 起多了一条可选数据流向：「页面上下文」开启后会把当前页面正文一并发送。
+   **它是出厂关闭的可选项**，答复口径照 `docs/store-listing.md` 第四节最后一段写，
+   重点说清「默认关闭、仅提问时读取、不预采集、可随时关回」。
 4. 文案里**不要出现**「ChatGPT」「官方」等品牌词或夸张措辞（"最好""第一"）；
    描述里我们只提「任意 OpenAI 兼容接口」，安全。
 5. 包里不能有远程代码、`unsafe-eval` CSP、混淆代码 —— `tools/package.mjs` 的体检已替你挡住。

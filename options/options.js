@@ -135,6 +135,27 @@ function fillLanguageOptions() {
   }
 }
 
+/**
+ * 页面上下文下拉。
+ * 三档之间的差别主要是「有多少页面内容会被发出去」，所以选项名必须自解释 ——
+ * 只写「开 / 关」会让人不知道自己正在把整篇文档交给模型服务。
+ */
+function fillPageContextOptions() {
+  const sel = $('#pageContext');
+  sel.innerHTML = '';
+  const items = [
+    ['off', t('optPageCtxOff')],
+    ['auto', t('optPageCtxAuto')],
+    ['always', t('optPageCtxAlways')],
+  ];
+  for (const [value, label] of items) {
+    const opt = document.createElement('option');
+    opt.value = value;
+    opt.textContent = label;
+    sel.appendChild(opt);
+  }
+}
+
 function fillModeOptions() {
   const sel = $('#defaultMode');
   const quick = $('#quickAskMode');
@@ -187,6 +208,7 @@ function readForm() {
     temperature: Number($('#temperature').value),
     contextBudget: Number($('#contextBudget').value),
     language: $('#language').value || 'auto',
+    pageContext: $('#pageContext').value || 'off',
     trigger: ($$('#triggerRadios input:checked')[0] || {}).value || 'chip',
     defaultMode: $('#defaultMode').value || 'explain',
     dblclickAsk: $('#dblclickAsk').checked,
@@ -218,6 +240,7 @@ function applyLanguage(language) {
   fillPresetOptions();
   fillModeOptions();
   fillLanguageOptions();
+  fillPageContextOptions();
 
   // 重填之后要把当前值放回去，否则下拉会跳回第一项
   $('#preset').value = PRESETS.some((p) => p.id === currentSettings.preset)
@@ -225,6 +248,7 @@ function applyLanguage(language) {
     : 'custom';
   $('#protocol').value = currentSettings.protocol || 'openai';
   $('#language').value = currentSettings.language || 'auto';
+  $('#pageContext').value = currentSettings.pageContext || 'off';
   $('#defaultMode').value = currentSettings.defaultMode || 'explain';
   $('#quickAskMode').value = currentSettings.quickAskMode || 'explain';
   const enabled = new Set(currentSettings.selectedModes || DEFAULT_SETTINGS.selectedModes);
@@ -250,6 +274,7 @@ function fillForm(s) {
   $('#contextBudgetValue').textContent = String(budget);
 
   $('#language').value = currentSettings.language || 'auto';
+  $('#pageContext').value = currentSettings.pageContext || 'off';
 
   const trigger = currentSettings.trigger || 'chip';
   $$('#triggerRadios input').forEach((r) => {
@@ -417,6 +442,9 @@ function bindForm() {
   $('#notionConnect').addEventListener('click', onNotionConnect);
   $('#obsidianTest').addEventListener('click', onObsidianTest);
   $('#contextBudget').addEventListener('change', (e) => persistQuiet({ contextBudget: Number(e.target.value) }));
+  // 「页面上下文」是往外发多少内容的开关，改完立刻落盘 ——
+  // 用户以为自己已经关掉了、实际还在发，是这里最不能出的错
+  $('#pageContext').addEventListener('change', (e) => persistQuiet({ pageContext: e.target.value }));
   $('#modeChecks').addEventListener('change', () => {
     const modes = $$('#modeChecks input:checked').map((i) => i.value);
     if (!modes.includes('ask')) modes.push('ask');

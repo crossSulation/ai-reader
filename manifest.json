@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "__MSG_appName__",
-  "version": "1.5.0",
+  "version": "1.6.0",
   "description": "__MSG_appDesc__",
   "default_locale": "en",
   "minimum_chrome_version": "116",
@@ -22,8 +22,8 @@
   "content_scripts": [
     {
       "matches": ["http://*/*", "https://*/*", "file:///*"],
-      "//": "i18n.core.js 必须排在 content.js 之前：它把字典挂到 globalThis，后者同步取词",
-      "js": ["lib/i18n.core.js", "content/content.js"],
+      "//": "两个 *.core.js 必须排在 content.js 之前：它们是经典脚本，把界面字典与正文抽取算法挂到 globalThis，后者同步取用",
+      "js": ["lib/i18n.core.js", "lib/page-text.core.js", "content/content.js"],
       "run_at": "document_idle",
       "all_frames": true
     }

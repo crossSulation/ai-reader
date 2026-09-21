@@ -264,6 +264,9 @@ chrome.runtime.onConnect.addListener((port) => {
         budget: settings.contextBudget,
         // 回答语言跟随界面语言：界面切成英文的用户，要的是英文答案
         answerLang: settings.language === 'en' ? 'en' : 'zh',
+        // 整页正文是否采集由内容脚本决定（它才知道划词处有没有可依附的段落），
+        // 这里只负责透传；上限与截断在 lib/prompts.js 里按预算统一处理
+        pageText: payload.pageText,
       }));
     } catch (err) {
       safePost(port, { type: 'error', reqId, message: t('swBuildFailed', { msg: err?.message || err }) });

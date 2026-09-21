@@ -52,6 +52,8 @@ const CHROME_STUB = `(() => {
     autoSave: true, maxHistory: 800, disabledDomains: [],
     // language 默认 auto = 跟随浏览器；下面用 ?uilang= 显式覆盖来测两种渲染
     language: qs.get('uilang') || 'auto',
+    // 整页正文档位：默认 off，用 ?pagectx= 测回填与渲染
+    pageContext: qs.get('pagectx') || 'off',
   };
   const state = qs.get('state') || 'unconfigured';
   const settings = state === 'configured'
@@ -198,6 +200,8 @@ const LOCALE_SNAPSHOT = `(() => {
     htmlLang: document.documentElement.lang,
     docTitle: document.title,
     languageValue: (document.querySelector('#language') || {}).value || null,
+    pageContextValue: (document.querySelector('#pageContext') || {}).value || null,
+    pageContextLabels: [...document.querySelectorAll('#pageContext option')].map((o) => o.textContent),
     cjkCount,
     cjkSample,
   };
@@ -302,7 +306,18 @@ async function main() {
     );
 
     console.log('\n【6】options · 保存后提示消失');
-    await cdp.clickAt(s.saveBtn.box.x, s.saveBtn.box.y);
+    // 设置项会不断变多，「保存并测试」按钮可能被推到视口之外。
+    // 必须先把按钮滚进视口再取坐标，否则点到的是视口外的位置 ——
+    // 那样测出来的是「点不到」，而不是「点了没反应」，两者根因完全不同。
+    await cdp.eval(`document.getElementById('saveBtn').scrollIntoView({ block: 'center' })`);
+    await sleep(260);
+    const saveBox = await cdp.eval(
+      `(() => { const r = document.getElementById('saveBtn').getBoundingClientRect();
+        return { x: r.left + r.width / 2, y: r.top + r.height / 2,
+                 inView: r.top > 0 && r.bottom < innerHeight }; })()`
+    );
+    check('「保存并测试」按钮已滚进视口', saveBox.inView === true, JSON.stringify(saveBox));
+    await cdp.clickAt(saveBox.x, saveBox.y);
     await sleep(900);
     s = await cdp.eval(PAGE_SNAPSHOT);
     check('测试结果区出现', s.testResult?.shown === true, `display=${s.testResult?.display}`);
@@ -400,6 +415,17 @@ async function main() {
     check('<html lang> 同步成 zh-CN', zhSnap.htmlLang === 'zh-CN', `实际：${zhSnap.htmlLang}`);
     check('文档标题也是中文', zhSnap.docTitle.includes('设置'), `实际：${zhSnap.docTitle}`);
     check('中文界面里当然有中文（对照组）', zhSnap.cjkCount > 0, `CJK 字符数=${zhSnap.cjkCount}`);
+    check(
+      '页面上下文下拉有三个档位，且文案是中文',
+      zhSnap.pageContextLabels.length === 3 &&
+        zhSnap.pageContextLabels.every((l) => /[\u4e00-\u9fff]/.test(l)),
+      `实际：${JSON.stringify(zhSnap.pageContextLabels)}`
+    );
+    check(
+      '默认档位是「仅所在段落」（页面正文不会默认外发）',
+      zhSnap.pageContextValue === 'off',
+      `实际：${zhSnap.pageContextValue}`
+    );
 
     /* ---------------------------------------------------------------- */
     console.log('\n【10】界面语言 · 英文浏览器自动切英文');
@@ -426,6 +452,23 @@ async function main() {
       `实际：${forced.tabSettings}`
     );
     check('语言下拉停在用户选的那一项', forced.languageValue === 'en', `实际：${forced.languageValue}`);
+
+    // 档位回填：设置里存着的值必须出现在下拉上。
+    // 这一项要是漏了，用户打开设置页会以为功能又关掉了，转头去重设一遍。
+    await cdp.navigate(page('options/options.html', 'configured') + '&lang=zh-CN&pagectx=always');
+    await sleep(420);
+    const filled = await readLocaleSnapshot(cdp);
+    check(
+      '已保存的页面正文档位会回填到下拉里',
+      filled.pageContextValue === 'always',
+      `实际：${filled.pageContextValue}`
+    );
+    check(
+      '英文界面下这个下拉也整体切成英文（含选项文案）',
+      enSnap.pageContextLabels.length === 3 &&
+        enSnap.pageContextLabels.every((l) => !/[\u4e00-\u9fff]/.test(l)),
+      `实际：${JSON.stringify(enSnap.pageContextLabels)}`
+    );
   } finally {
     await close();
     await server.close();
